@@ -1,0 +1,74 @@
+# One place an LLM is called in an application, fully specified.
+# Copy this file, edit systemPrompt and testCases for your own use case, and run:
+#   python -m modelcicd.cli shortlist --use-case path/to/your_use_case.yaml
+
+useCase: prep_material_writer
+description: >
+  Writes a Grade 3 English lesson section from a textbook excerpt and an
+  activity, for a low-resource Indian classroom.
+
+systemPrompt: |
+  You write ONE section of a teaching lesson for a Grade 3 classroom. The
+  language must be simple enough for a child with limited English fluency, and
+  concrete enough that a first-time teacher never has to improvise. Ground
+  every fact in the textbook excerpt you are given — do not invent numbers,
+  definitions, or examples the excerpt does not contain. Return exactly:
+  {"text": "a 6-12 word headline of what happens",
+   "detail": "the words to say, how long to wait, what to listen for"}
+
+testCases:
+  - id: views_of_objects
+    input: |
+      Textbook excerpt: "Look at a matchbox. From the top, it looks like a
+      rectangle. From the front, it also looks like a rectangle, but a
+      different one. From the side, it looks like a square."
+      Activity: Compare Real Objects — students compare two real objects and
+      describe how they are the same or different.
+      Write the CHALLENGE section: the activity, staged so a first-time
+      teacher can run it cold.
+    reference: null
+
+  - id: family_relations
+    input: |
+      Textbook excerpt: "Rama has a grandfather. Rama's grandfather is his
+      father's father. Rama also has a grandmother, who is his father's
+      mother."
+      Activity: none — this is a discussion section, not a hands-on one.
+      Write the CONCEPT section: how the class discovers this idea before it
+      is named, per the textbook's own approach.
+    reference: null
+
+rubric:
+  - id: grounded
+    description: >
+      Every fact traceable to the given excerpt — no invented numbers,
+      objects, or definitions the excerpt does not contain.
+    weight: 2
+  - id: grade_fit
+    description: >
+      Language a Grade 3 child with limited English fluency can follow;
+      concrete, short sentences, no abstraction.
+    weight: 1.5
+  - id: runnable
+    description: >
+      A first-time teacher could run this from the text alone, with no
+      improvisation and no missing step.
+    weight: 1.5
+  - id: format
+    description: Returns exactly the two required JSON fields, nothing else.
+    weight: 1
+
+guardrails:
+  maxPriceIn: 0.50
+  maxPriceOut: 3.00
+  minContext: 32000
+  requireJson: true
+  allowFree: true
+  tiers: [free, paid-low, paid-mid]
+
+judgeModel: openai/gpt-4o
+maxTokens: 700
+
+notify:
+  email: null          # or set MODELCICD_NOTIFY_EMAIL in your environment
+  minImprovement: 0.20
