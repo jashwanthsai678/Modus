@@ -1,12 +1,18 @@
 # Model CICD
 
-Continuous model discovery, sandboxed benchmarking, and human-approved
-promotion — for every place your application calls an LLM.
+**The AI model behind every feature in your app goes stale the moment
+someone stops watching it. This project watches it for you — and never
+swaps one in without your sign-off.**
 
-Model CICD does not try to find "the best model." It finds the best model
-**for one specific job in your application**, using that job's own test
-cases and its own quality bar, and it never changes what your app uses in
-production until a human explicitly approves the change.
+## What it is
+
+Model CICD is a self-hosted tool that continuously discovers, benchmarks,
+and lets you approve which LLM your application actually uses — separately,
+for each specific feature that calls one. It doesn't look for "the best
+model" in general; it finds the best model **for one job**, tested against
+that job's own test cases and scored against a rubric written for that job,
+and it never changes what your app uses in production until a human
+explicitly says yes.
 
 ```python
 from modelcicd.resolver import resolve
@@ -18,9 +24,58 @@ model = resolve("support_bot_reply", fallback="gpt-4o-mini")
 That's the entire integration surface. Everything else in this repo exists
 to answer one question well: which model id should that line return?
 
+## Who needs it
+
+Any developer or team whose application calls an LLM in one or more places,
+and who has ever had to answer (or been unable to answer) questions like:
+"why are we using this particular model here," "are we overpaying for it,"
+"would a newer or cheaper model do just as well," or "who approved this and
+when." If your app has exactly one throwaway LLM call that nobody would
+notice if it got slightly worse or slightly more expensive, you probably
+don't need this yet. The moment even one LLM call matters enough that its
+cost or quality is worth tracking, this is for you.
+
+## Why they need it
+
+Because a model choice, left alone, decays:
+
+- **New, cheaper, or better models ship every few weeks.** Without a
+  standing process to re-check, you either keep overpaying for a model a
+  newer one now beats, or never find out a cheaper option would do the same
+  job.
+- **A quality regression from a model swap is invisible until a user hits
+  it.** Nobody manually re-tests forty candidates by hand every time a new
+  model drops — so most teams simply don't, and find out something got worse
+  from a support ticket instead of a benchmark.
+- **"Which model, exactly?" is usually answered from memory**, not
+  evidence — no record of what was tried, what it scored, or why it was
+  chosen, so the decision can't be revisited or defended later.
+- **A silent model swap in production is a real risk**, on par with an
+  unreviewed dependency upgrade — it should never happen without a human
+  deciding it should.
+
+## What value it adds
+
+- **Lower cost without guessing.** Every candidate is filtered by your
+  price ceiling before anything is spent, and ranked within its own price
+  tier, so "cheaper" is a fact you can see, not a hope.
+- **Quality protected, not just cost.** Nothing gets proposed as a
+  replacement without first being scored, blind, against the rubric that
+  feature's own owner wrote — a model can't win purely by being cheap.
+- **A record that survives memory.** Every run, every candidate, every
+  score, and every approval is saved to disk with a timestamp — "why this
+  model" is always answerable later, by anyone, not just whoever remembers.
+- **A single, low-friction decision point.** A human sees the evidence and
+  clicks Approve (CLI or dashboard) — nothing changes silently, and nothing
+  requires re-deriving a process from scratch each time.
+- **This, repeated, per feature.** The same loop runs independently for
+  every place your app calls an LLM, so a five-feature application ends up
+  with five independently tracked, independently approved model choices,
+  not one blunt global setting.
+
 ---
 
-## Why this exists
+## The design constraints behind it
 
 - **New models ship constantly, and prices move.** Re-checking the field by
   hand does not scale past one or two use cases.
@@ -41,6 +96,32 @@ to be dropped into an existing repository.
 ---
 
 ## How it works
+
+In plain terms, the loop is:
+
+1. **Keep checking for new or updated models** — what exists, what it costs,
+   right now, not whatever was true when you last looked.
+2. **See how each one actually performs for this use case** — not a generic
+   benchmark, your own test cases, run for real against each candidate.
+3. **Note all of it down** — every candidate, every test case, every answer,
+   every score, saved to disk, never silently discarded.
+4. **Measure with your own metric** — the rubric *you* wrote for this
+   specific feature, scored by a separate judge model, blind.
+5. **Surface analytics per response** — a score, a would-ship verdict, and
+   *why*, per criterion, per candidate, per test case, plus price and a
+   trend of how the best available score has moved over time.
+6. **Connect to your application** — one `resolve("use_case_name")` call
+   returns the model your app should use for that feature.
+7. **The model name changes — but only when you say so.** Steps 1–5 run
+   automatically, on whatever schedule you choose. Step 6 does **not**
+   auto-switch to whatever scored highest: a better candidate is flagged as
+   *pending*, and `resolve()` keeps returning the old model until a human
+   explicitly approves the new one, from the CLI or the dashboard.
+
+That last point is the one deliberate exception to "automatic": discovery,
+testing, measuring, and analytics all happen with zero human involvement —
+only the moment your application's actual behavior changes requires someone
+to say yes.
 
 ```
  catalogue.py          guardrails.py         sandbox.py        judge.py        rank.py         state.py
