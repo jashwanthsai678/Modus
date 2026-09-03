@@ -74,8 +74,8 @@ to be dropped into an existing repository.
 6. **State + notify** — a candidate that clearly beats the currently
    approved model is recorded as **pending** and, if configured, emailed to
    a human. Nothing in production changes yet.
-7. **Approve** — the one action that promotes a model. Only after this does
-   `resolve()` return the new id.
+7. **Approve** — the one action that promotes a model, from the CLI or the
+   dashboard. Only after this does `resolve()` return the new id.
 
 ---
 
@@ -87,6 +87,8 @@ python -m venv .venv
 .venv\Scripts\activate            # Windows
 source .venv/bin/activate         # macOS/Linux
 pip install -r requirements.txt
+# or: pip install -e .            # also gives you the `modelcicd` command,
+#                                  # so every command below can drop `python -m`
 
 # 2. Configure
 cp .env.example .env
@@ -105,8 +107,10 @@ python -m modelcicd.cli run --use-case use_cases/my_feature.yaml
 # 6. Check what's approved vs. pending
 python -m modelcicd.cli status --use-case use_cases/my_feature.yaml
 
-# 7. Promote a candidate once you're satisfied
+# 7. Promote a candidate once you're satisfied — from the CLI...
 python -m modelcicd.cli approve --use-case use_cases/my_feature.yaml
+# ...or from the dashboard:
+python -m modelcicd.cli ui
 ```
 
 ---
@@ -121,12 +125,40 @@ python -m modelcicd.cli approve --use-case use_cases/my_feature.yaml
 | `run --use-case <path>` | **$** | Sandboxes + judges + ranks the shortlist |
 | `status [--use-case <path> \| --use-case-name <name>]` | free | Shows the approved model and any pending candidate |
 | `approve [--use-case <path> \| --use-case-name <name>] [--model <id>]` | free | Promotes a model — the only thing that changes `resolve()` |
+| `ui [--host <addr>] [--port <n>]` | free | Launches the local dashboard at `http://127.0.0.1:5000` |
 
 Useful `run` flags: `--tier {free,paid-low,paid-mid,paid-high}` to restrict
 which price band is benched, `--models a,b,c` to bench an explicit list
 instead of the guardrail-filtered shortlist, `--limit N` to cap candidate
 count, `--yes` to skip the interactive cost confirmation (for scheduled
-jobs).
+jobs). If installed with `pip install -e .`, every command above also works
+as `modelcicd <command>` instead of `python -m modelcicd.cli <command>`.
+
+---
+
+## Dashboard
+
+`python -m modelcicd.cli ui` starts a local, read-only-by-default web view
+over the same files the CLI already writes — nothing it displays is computed
+anywhere else, and nothing about it is required to use the CLI. Think
+`mlflow ui`, pointed at `state/` and `out/` instead of `mlruns/`.
+
+- **Home page** — every use case at a glance: approved model, pending
+  candidate, run count, and a trend sparkline of the best score each past run
+  found (so a slow drift or a newly competitive cheap model is visible
+  without opening a single JSON file).
+- **Use case page** — the full approval history and a link to every past
+  run's leaderboard. If a candidate is pending, an **Approve** button sits
+  right next to it — behind a confirmation dialog, and wired to the exact
+  same `state.approve()` function the CLI's `approve` command calls, so
+  there's still only one thing in this project that can change what
+  `resolve()` returns.
+- **Run page** — the leaderboard as a per-tier bar chart (score, price,
+  would-ship rate on hover) with the full data table underneath it, so
+  nothing is chart-only.
+
+`run` and `status` print the relevant dashboard link after they finish, so
+you don't have to know the URL scheme by heart.
 
 ---
 
@@ -229,10 +261,13 @@ modelcicd/
   state.py        what's approved per use case, and its history
   resolver.py     resolve(use_case) -> the approved model id (the integration point)
   notify.py       emails a human when a candidate is pending
-  cli.py          the `python -m modelcicd.cli ...` entrypoint
+  cli.py          the `python -m modelcicd.cli ...` / `modelcicd ...` entrypoint
+  dashboard.py    the local read-only-by-default web view (`cli ui`)
+  templates/      the dashboard's HTML (Jinja2)
   tests/          a dependency-free test module: python -m modelcicd.tests.test_modelcicd
 examples/
   prep_material/use_case.yaml   a worked example use case
+pyproject.toml    lets you `pip install -e .` for the `modelcicd` command
 ```
 
 ## Testing
