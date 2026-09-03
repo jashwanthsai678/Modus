@@ -3,6 +3,14 @@
 {% block content %}
 <h1>{{ state.useCase }}</h1>
 
+{% if approved_flash %}
+<div class="card flash-success">Approved <strong>{{ approved_flash }}</strong>. This is
+  now what <code>resolve("{{ state.useCase }}")</code> returns.</div>
+{% endif %}
+{% if error_flash %}
+<div class="card flash-error">{{ error_flash }}</div>
+{% endif %}
+
 <div class="card">
   <div class="muted">Approved model</div>
   <div>
@@ -17,7 +25,11 @@
   <div class="muted">Pending candidate</div>
   <div>{{ state.pending.model }} — score {{ state.pending.score }}
     (found {{ state.pending.foundAt }})</div>
-  <div class="muted">approve with:
+  <form method="post" action="{{ url_for('approve', name=state.useCase) }}"
+        onsubmit="return confirm('Approve {{ state.pending.model }} for {{ state.useCase }}?\n\nThis changes what resolve(\'{{ state.useCase }}\') returns in production.');">
+    <button type="submit" class="btn-approve">Approve {{ state.pending.model }}</button>
+  </form>
+  <div class="muted">or from the CLI:
     <code>python -m modelcicd.cli approve --use-case-name {{ state.useCase }}</code></div>
 </div>
 {% endif %}

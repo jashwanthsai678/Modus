@@ -1,17 +1,21 @@
-"""A browser view over the files the CLI already writes. Nothing here writes.
+"""A browser view over the files the CLI already writes.
 
 MIRRORS `mlflow ui`. State (`state/*.json`) and run results (`out/*.json`) are
-produced entirely by `cli.py`'s own `run`/`approve` commands; this module adds
-no new source of truth, it only renders what is already on disk. That is also
-why there is no "approve" button here yet — writing state from here would mean
-two code paths could promote a model, and `state.approve()` is meant to be the
-only one.
+produced by `cli.py`'s own `run` command; this module adds no new source of
+truth for that data, it only renders what is already on disk.
+
+THE ONE EXCEPTION: APPROVING. The dashboard's "Approve" button calls
+`state.approve()` directly — the exact function `cli.py approve` calls, not a
+second implementation of it. There is still only one thing in this project
+that can change what `resolver.resolve()` returns; the browser is just a
+second door into the same room, POST-only and confirmed client-side before it
+opens.
 """
 import json
 from pathlib import Path
 from typing import Optional
 
-from flask import Flask, abort, render_template
+from flask import Flask, abort, redirect, render_template, request, url_for
 
 from . import state as state_module
 
@@ -63,7 +67,30 @@ def create_app() -> Flask:
             abort(404, f"no state recorded yet for use case {name!r}")
         runs = [{"filename": p.name, "stamp": p.name.split("_", 1)[0]}
                 for p in _runs_for(name)]
-        return render_template("usecase.html", state=state, runs=runs)
+        return render_template("usecase.html", state=state, runs=runs,
+                              approved_flash=request.args.get("approved"),
+                              error_flash=request.args.get("error"))
+
+    @app.route("/usecase/<path:name>/approve", methods=["POST"])
+    def approve(name):
+        """Promote the pending candidate. Calls `state.approve()` — the same
+        function `cli.py approve` calls — so there is exactly one place a
+        model actually gets promoted, however it was triggered."""
+        # 303, not Flask's default 302: a POST->302 is ambiguous about whether
+        # the redirect should be re-fetched with POST or GET (browsers guess
+        # GET; other clients, e.g. curl -L, may resend the POST). 303 makes
+        # "fetch this next one with GET" unambiguous for every client.
+        pending = state_module.load(name).get("pending")
+        if not pending:
+            return redirect(url_for("usecase", name=name,
+                                    error="nothing is pending — nothing to approve"),
+                            code=303)
+        try:
+            state_module.approve(name, pending["model"])
+        except ValueError as exc:
+            return redirect(url_for("usecase", name=name, error=str(exc)), code=303)
+        return redirect(url_for("usecase", name=name, approved=pending["model"]),
+                        code=303)
 
     @app.route("/run/<path:filename>")
     def run_detail(filename):
