@@ -47,6 +47,12 @@ OUT = _ROOT / "out"
 CATALOGUE_PATH = OUT / "catalogue.json"
 TEMPLATE = _ROOT / "examples" / "prep_material" / "use_case.yaml"
 
+# Kept as plain constants, not imported from dashboard.py, so `run` and
+# `status` can print a dashboard link without requiring Flask to be
+# installed just to answer "what URL would this be at".
+DASHBOARD_HOST = "127.0.0.1"
+DASHBOARD_PORT = 5000
+
 
 def _load_catalogue(refresh: bool) -> dict:
     if not refresh and CATALOGUE_PATH.exists():
@@ -155,6 +161,11 @@ def cmd_run(args) -> int:
         notify_module.send_pending(uc.name, new_state, text, to=uc.notify.email)
     else:
         print("\nNo candidate beat the approved model by enough to page anyone.")
+
+    print(f"\nview this leaderboard : http://{DASHBOARD_HOST}:{DASHBOARD_PORT}"
+          f"/run/{stamp}_{uc.name}.json")
+    print(f"                        (run `python -m modelcicd.cli ui` if it "
+          f"isn't already running)")
     return 0
 
 
@@ -194,6 +205,7 @@ def cmd_status(args) -> int:
     else:
         print("pending        (nothing)")
     print(f"history        {len(state.get('history') or [])} run(s)")
+    print(f"dashboard      http://{DASHBOARD_HOST}:{DASHBOARD_PORT}/usecase/{name}")
     return 0
 
 
