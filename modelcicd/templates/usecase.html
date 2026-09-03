@@ -1,6 +1,9 @@
 {% extends "base.html" %}
 {% block title %}{{ state.useCase }} — Model CICD{% endblock %}
 {% block content %}
+{% if project %}
+<p class="muted"><a class="link" href="{{ url_for('project_detail', slug=project) }}">&larr; {{ project }}</a></p>
+{% endif %}
 <h1>{{ state.useCase }}</h1>
 
 {% if approved_flash %}
@@ -25,12 +28,25 @@
   <div class="muted">Pending candidate</div>
   <div>{{ state.pending.model }} — score {{ state.pending.score }}
     (found {{ state.pending.foundAt }})</div>
-  <form method="post" action="{{ url_for('approve', name=state.useCase) }}"
+  <form method="post" action="{{ scoped_url('approve', project=project, name=state.useCase) }}"
         onsubmit="return confirm('Approve {{ state.pending.model }} for {{ state.useCase }}?\n\nThis changes what resolve(\'{{ state.useCase }}\') returns in production.');">
     <button type="submit" class="btn-approve">Approve {{ state.pending.model }}</button>
   </form>
   <div class="muted">or from the CLI:
-    <code>python -m modelcicd.cli approve --use-case-name {{ state.useCase }}</code></div>
+    <code>python -m modelcicd.cli approve --use-case-name {{ state.useCase }}{{ ' --project ' + project if project else '' }}</code></div>
+</div>
+{% endif %}
+
+{% if code_target %}
+<div class="card">
+  <div class="muted">Code target</div>
+  <div><code>{{ code_target.file }}</code> in your connected repo</div>
+  <div class="muted" style="margin-top: 6px;">currently tracks:
+    {{ code_target.current_model or '(not set)' }}</div>
+  <a class="btn" style="display: inline-block; margin-top: 10px;"
+     href="{{ url_for('code_patch_preview', project=project, name=state.useCase) }}">Preview code change</a>
+  <div class="muted" style="margin-top: 8px;">Writing to your source is a separate,
+    further confirmation from approving — approving alone never touches it.</div>
 </div>
 {% endif %}
 
@@ -43,7 +59,7 @@
   {% for r in runs %}
   <tr>
     <td>{{ r.stamp }}</td>
-    <td><a class="link" href="{{ url_for('run_detail', filename=r.filename) }}">{{ r.filename }}</a></td>
+    <td><a class="link" href="{{ scoped_url('run_detail', project=project, filename=r.filename) }}">{{ r.filename }}</a></td>
   </tr>
   {% endfor %}
 </table>

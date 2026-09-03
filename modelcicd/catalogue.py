@@ -6,11 +6,19 @@ modality, all of it. An agent that "goes and reads the pricing page" adds
 latency, cost, and a failure mode a `GET` request does not have: it can misread
 a number and poison the shortlist silently. Nothing here calls a model.
 
-WHY OPENROUTER ONLY, FOR NOW. It already proxies most of the platforms someone
-would ask for by name — Groq, Fireworks, Together, DeepInfra, and the frontier
-labs — through one endpoint with one consistent shape, including price. A second
-provider is a few lines in PROVIDERS once its endpoint is known; it is not core
-to v1 and every provider added is another shape this file has to trust.
+MULTIPLE PROVIDERS, EACH TRUSTED FOR WHAT IT ACTUALLY PUBLISHES. OpenRouter
+proxies most platforms through one endpoint with one consistent shape,
+including price — that's still the default. Groq and Fireworks are also
+registered here, each with its OWN row-normalizer (`_rows_groq`,
+`_rows_fireworks`), because their `/models` endpoints do not necessarily
+publish machine-readable pricing or JSON-mode support the way OpenRouter's
+does. UNKNOWN IS NOT FREE, AND UNKNOWN IS NOT JSON-CAPABLE EITHER: a field
+either provider's API doesn't expose comes back `None`/`False`, never
+guessed — the same "wrong in the direction of excluding a maybe-good
+candidate, not including a maybe-broken one" bias the price guardrail
+already applies. A project picks which of these providers to actually
+search (`project.providers`); adding a further provider is a new entry in
+PROVIDERS plus its own `_rows_<name>` normalizer.
 
 THE DEDUPE PROBLEM. The same weights hosted on two platforms are two different
 artefacts — different quantisation, different context windows, different
@@ -29,6 +37,10 @@ from typing import Optional
 PROVIDERS = {
     "openrouter": {"url": "https://openrouter.ai/api/v1/models",
                    "key_env": "OPENROUTER_API_KEY", "needs_key": False},
+    "groq": {"url": "https://api.groq.com/openai/v1/models",
+             "key_env": "GROQ_API_KEY", "needs_key": True},
+    "fireworks": {"url": "https://api.fireworks.ai/inference/v1/models",
+                  "key_env": "FIREWORKS_API_KEY", "needs_key": True},
 }
 
 # Suffixes that describe ROUTING or PACKAGING, stripped when forming the
@@ -69,7 +81,7 @@ def _price(value) -> Optional[float]:
     return round(per_million, 4) if per_million >= 0 else None
 
 
-def _rows(payload: dict) -> list:
+def _rows_openrouter(payload: dict) -> list:
     out = []
     for m in payload.get("data") or []:
         arch = m.get("architecture") or {}
@@ -86,6 +98,29 @@ def _rows(payload: dict) -> list:
             # Every candidate is scored through a JSON-returning call; a model
             # without this cannot be judged, only guessed at.
             "json_mode": "response_format" in (m.get("supported_parameters") or []),
+        })
+    return out
+
+
+def _rows_openai_compatible(provider: str, payload: dict) -> list:
+    """Groq and Fireworks both expose an OpenAI-compatible `/models` list —
+    just `{"data": [{"id": ...}, ...]}`, with no guaranteed price or
+    JSON-mode field. Whatever context field IS present (naming varies) is
+    used; price and json_mode default to unknown/false rather than guessed —
+    an unpriced or unconfirmed-JSON model is excluded downstream by the same
+    guardrails that already exclude any other unpriced model, never silently
+    treated as free or capable."""
+    out = []
+    for m in payload.get("data") or []:
+        if not m.get("id"):
+            continue
+        context = (m.get("context_window") or m.get("context_length")
+                  or m.get("max_context_length"))
+        out.append({
+            "provider": provider, "id": m["id"], "name": m.get("id"),
+            "context": context, "price_in": None, "price_out": None,
+            "input_modalities": ["text"], "output_modalities": ["text"],
+            "json_mode": False,
         })
     return out
 
@@ -112,7 +147,9 @@ def fetch(provider: str, *, timeout: float = 20.0) -> list:
     except Exception as exc:                        # noqa: BLE001
         print(f"[modelcicd] {provider}: catalogue unreachable ({str(exc)[:140]})")
         return []
-    return [r for r in _rows(payload) if r.get("id")]
+    normalize = (_rows_openrouter if provider == "openrouter"
+                else lambda p: _rows_openai_compatible(provider, p))
+    return [r for r in normalize(payload) if r.get("id")]
 
 
 def poll(providers: Optional[list] = None) -> dict:
@@ -158,3 +195,18 @@ def save(catalogue: dict, path) -> None:
 
 def load(path) -> dict:
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+DEFAULT_PATH = Path(__file__).resolve().parent.parent / "out" / "catalogue.json"
+
+
+def load_or_poll(path=DEFAULT_PATH, *, refresh: bool = False) -> dict:
+    """The cached catalogue if one is on disk and a refresh wasn't asked for,
+    otherwise a fresh poll (saved for next time). One implementation shared by
+    the CLI and the scheduler, so both agree on what "the catalogue" is."""
+    p = Path(path)
+    if not refresh and p.exists():
+        return load(p)
+    cat = poll()
+    save(cat, p)
+    return cat

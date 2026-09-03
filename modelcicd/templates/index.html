@@ -1,16 +1,82 @@
 {% extends "base.html" %}
-{% block title %}Model CICD — Use cases{% endblock %}
+{% block title %}Model CICD — Projects{% endblock %}
 {% block content %}
-<h1>Use cases</h1>
-<p class="muted">Read-only view over state/ and out/ — nothing on this page can change what resolve() returns.</p>
+<h1>Projects</h1>
+<p class="muted">Every application you've connected. Each one gets its own AI features,
+  each benchmarked and approved independently.</p>
 
-{% if not cases %}
-<p class="muted">No use case has a state file yet. Run
-  <code>python -m modelcicd.cli run --use-case &lt;path&gt;</code> to produce one.</p>
-{% else %}
+{% if error_flash %}
+<div class="card errors">{{ error_flash }}</div>
+{% endif %}
+
+{% if not projects and not legacy_cases %}
+<div class="card">
+  <h2 style="margin-top:0;">Get started</h2>
+  <p class="muted">Nothing connected yet. Three steps:</p>
+  <ol>
+    <li>Connect the application below — just a name, nothing is read from it.</li>
+    <li>Add an AI feature to it — a guided form asks for the system prompt,
+      test cases, a rubric, and your price/model preferences.</li>
+    <li>Run the bench. A human (you) approves whichever candidate should go
+      to production — nothing switches on its own.</li>
+  </ol>
+  <p class="muted">Prefer the terminal? <code>python -m modelcicd.cli onboarding</code>
+    prints the same flow as CLI commands.</p>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2 style="margin-top:0;">Connect a project</h2>
+  <form method="post" action="{{ url_for('create_project') }}">
+    <label for="name">Application name</label>
+    <input id="name" name="name" type="text" required placeholder="e.g. Support Portal">
+    <label for="description">Description <span class="hint">(optional)</span></label>
+    <input id="description" name="description" type="text" placeholder="what it does">
+    <label for="notify_email">Notify email <span class="hint">(optional — default for every feature in it)</span></label>
+    <input id="notify_email" name="notify_email" type="email" placeholder="you@example.com">
+    <label for="repo_path">Repo path <span class="hint">(optional — a local folder, already on this machine, for
+      read-only reference/scanning in the wizard and as the target for a code patch after approval)</span></label>
+    <input id="repo_path" name="repo_path" type="text" placeholder="D:\repos\my-app">
+    <label for="repo_url">...or a git URL <span class="hint">(optional — modelcicd clones it, shallow and read-only;
+      give either this or a repo path, not both)</span></label>
+    <input id="repo_url" name="repo_url" type="text" placeholder="https://github.com/acme/my-app.git">
+    <label>Marketplaces to search <span class="hint">(default: OpenRouter)</span></label>
+    <div class="checkline">
+      <input id="prov-openrouter" name="providers" type="checkbox" value="openrouter" checked>
+      <label for="prov-openrouter" style="margin:0;">OpenRouter</label>
+    </div>
+    <div class="checkline">
+      <input id="prov-groq" name="providers" type="checkbox" value="groq">
+      <label for="prov-groq" style="margin:0;">Groq</label>
+    </div>
+    <div class="checkline">
+      <input id="prov-fireworks" name="providers" type="checkbox" value="fireworks">
+      <label for="prov-fireworks" style="margin:0;">Fireworks</label>
+    </div>
+    <button type="submit" class="btn btn-primary" style="margin-top: 14px;">Connect</button>
+  </form>
+</div>
+
+{% if projects %}
+<table>
+  <tr><th>Project</th><th>Description</th><th>AI features</th><th>Connected</th></tr>
+  {% for p in projects %}
+  <tr>
+    <td><a class="link" href="{{ url_for('project_detail', slug=p.slug) }}">{{ p.name }}</a></td>
+    <td class="muted">{{ p.description or '—' }}</td>
+    <td>{{ p.use_case_count }}</td>
+    <td class="muted">{{ p.created_at[:10] if p.created_at else '—' }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{% if legacy_cases %}
+<h2>Unscoped use cases</h2>
+<p class="muted">Run directly with <code>--use-case &lt;path&gt;</code>, outside of any project.</p>
 <table>
   <tr><th>Use case</th><th>Approved model</th><th>Score</th><th>Pending</th><th>Runs</th><th>Trend</th></tr>
-  {% for c in cases %}
+  {% for c in legacy_cases %}
   <tr>
     <td><a class="link" href="{{ url_for('usecase', name=c.useCase) }}">{{ c.useCase }}</a></td>
     <td>{{ c.approvedModel or '—' }}</td>

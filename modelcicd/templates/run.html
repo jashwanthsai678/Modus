@@ -3,7 +3,7 @@
 {% block content %}
 <h1>{{ board.useCase }}</h1>
 <p class="muted">judge {{ board.judge }} &middot; ran {{ board.ranAt }} &middot;
-  <a class="link" href="{{ url_for('usecase', name=board.useCase) }}">back to use case</a></p>
+  <a class="link" href="{{ scoped_url('usecase', project=project, name=board.useCase) }}">back to use case</a></p>
 
 {% for tier, rows in (board.tiers or {}).items() %}
 <h2>{{ tier|upper }}</h2>

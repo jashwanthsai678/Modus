@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}{{ rel or 'browse repo' }} — {{ project.name }}{% endblock %}
+{% block content %}
+<p class="muted"><a class="link" href="{{ url_for('project_detail', slug=project.slug) }}">&larr; {{ project.name }}</a></p>
+<h1>{{ project.name }}'s repo</h1>
+<p class="muted">Read-only — {{ project.repo_path }}</p>
+
+<form method="get">
+  <label for="path">file path, relative to the repo</label>
+  <input id="path" name="path" type="text" value="{{ rel }}" placeholder="e.g. app/bot.py">
+  <button type="submit" class="btn" style="margin-top: 10px;">View</button>
+</form>
+
+{% if error %}
+<div class="card errors">{{ error }}</div>
+{% elif content is not none %}
+<h2>{{ rel }}</h2>
+<pre class="card" style="overflow-x: auto; white-space: pre; font-family: monospace; font-size: 13px;">{{ content }}</pre>
+{% endif %}
+{% endblock %}

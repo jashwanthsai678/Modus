@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+{% block title %}Add an AI feature — {{ project.name }}{% endblock %}
+{% block content %}
+<p class="muted"><a class="link" href="{{ url_for('project_detail', slug=project.slug) }}">&larr; {{ project.name }}</a></p>
+<h1>Add an AI feature</h1>
+<p class="muted">This becomes one <code>use_case.yaml</code> under
+  <code>projects/{{ project.slug }}/use_cases/</code> — everything below maps to a field in it.</p>
+
+{% if errors %}
+<div class="card errors">
+  <strong>Fix the following:</strong>
+  <ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+{% if project.repo_path %}
+<div class="card">
+  <h2 style="margin-top:0;">Reference the connected repo</h2>
+  <p class="muted">{{ project.repo_path }} — read-only. Opens in a new tab; nothing here
+    is submitted with the form below.</p>
+  <a class="btn" target="_blank" rel="noopener"
+     href="{{ url_for('repo_file', slug=project.slug) }}">Browse a file</a>
+</div>
+{% endif %}
+
+<form method="post">
+  <div class="card">
+    <h2 style="margin-top:0;">The feature</h2>
+    <label for="name">Name <span class="hint">(used in resolve("name") — letters, numbers, underscores)</span></label>
+    <input id="name" name="name" type="text" required value="{{ fields.name if fields else '' }}"
+           placeholder="e.g. support_bot_reply">
+    <label for="description">Description</label>
+    <input id="description" name="description" type="text" value="{{ fields.description if fields else '' }}">
+    <label for="system_prompt">System prompt <span class="hint">(what every candidate — and your live endpoint, if you add one — is asked)</span></label>
+    <textarea id="system_prompt" name="system_prompt" required>{{ fields.system_prompt if fields else '' }}</textarea>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">Test cases</h2>
+    <p class="muted">At least one id + input. Blank rows are ignored. Need more than {{ 8 }}? Add them
+      by editing the saved YAML directly afterward.</p>
+    {% for i in range(8) %}
+    {% set tc = fields.test_cases[i] if fields and i < fields.test_cases|length else None %}
+    <fieldset>
+      <legend>test case {{ i + 1 }}</legend>
+      <div class="row">
+        <div>
+          <label>id</label>
+          <input name="testcase_id" type="text" value="{{ tc.id if tc else '' }}">
+        </div>
+        <div>
+          <label>input</label>
+          <input name="testcase_input" type="text" value="{{ tc.input if tc else '' }}">
+        </div>
+        <div>
+          <label>reference <span class="hint">(optional)</span></label>
+          <input name="testcase_reference" type="text" value="{{ tc.reference if tc and tc.reference else '' }}">
+        </div>
+      </div>
+    </fieldset>
+    {% endfor %}
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">Rubric</h2>
+    <p class="muted">What the judge scores, 1-5, weighted. At least one id + description.</p>
+    {% for i in range(6) %}
+    {% set c = fields.rubric[i] if fields and i < fields.rubric|length else None %}
+    <fieldset>
+      <legend>criterion {{ i + 1 }}</legend>
+      <div class="row3">
+        <div>
+          <label>id</label>
+          <input name="rubric_id" type="text" value="{{ c.id if c else '' }}">
+        </div>
+        <div>
+          <label>description</label>
+          <input name="rubric_description" type="text" value="{{ c.description if c else '' }}">
+        </div>
+        <div>
+          <label>weight</label>
+          <input name="rubric_weight" type="number" step="0.1" value="{{ c.weight if c else '1.0' }}">
+        </div>
+      </div>
+    </fieldset>
+    {% endfor %}
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">Price / model preferences</h2>
+    <div class="row">
+      <div>
+        <label for="max_price_in">max $/1M input tokens</label>
+        <input id="max_price_in" name="max_price_in" type="number" step="0.01"
+               value="{{ fields.max_price_in if fields else '0.50' }}">
+      </div>
+      <div>
+        <label for="max_price_out">max $/1M output tokens</label>
+        <input id="max_price_out" name="max_price_out" type="number" step="0.01"
+               value="{{ fields.max_price_out if fields else '3.00' }}">
+      </div>
+      <div>
+        <label for="min_context">minimum context length</label>
+        <input id="min_context" name="min_context" type="number"
+               value="{{ fields.min_context if fields else '32000' }}">
+      </div>
+    </div>
+    <div class="checkline">
+      <input id="require_json" name="require_json" type="checkbox"
+             {{ 'checked' if not fields or fields.require_json else '' }}>
+      <label for="require_json" style="margin:0;">require JSON mode</label>
+    </div>
+    <div class="checkline">
+      <input id="allow_free" name="allow_free" type="checkbox"
+             {{ 'checked' if not fields or fields.allow_free else '' }}>
+      <label for="allow_free" style="margin:0;">include free-tier models</label>
+    </div>
+    <label>price tiers to bench</label>
+    {% set chosen_tiers = fields.tiers if fields else ['free', 'paid-low', 'paid-mid'] %}
+    {% for t in ['free', 'paid-low', 'paid-mid', 'paid-high'] %}
+    <div class="checkline">
+      <input id="tier-{{ t }}" name="tiers" type="checkbox" value="{{ t }}"
+             {{ 'checked' if t in chosen_tiers else '' }}>
+      <label for="tier-{{ t }}" style="margin:0;">{{ t }}</label>
+    </div>
+    {% endfor %}
+    <label for="judge_model">judge model <span class="hint">(pinned, must not be a candidate)</span></label>
+    <input id="judge_model" name="judge_model" type="text"
+           value="{{ fields.judge_model if fields else 'openai/gpt-4o' }}">
+    <label for="max_tokens">max tokens per answer</label>
+    <input id="max_tokens" name="max_tokens" type="number"
+           value="{{ fields.max_tokens if fields else '1200' }}">
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">Notify</h2>
+    <label for="notify_email">email <span class="hint">(optional — falls back to the project's default)</span></label>
+    <input id="notify_email" name="notify_email" type="email"
+           value="{{ fields.notify_email if fields and fields.notify_email else (project.notify_email or '') }}">
+    <label for="min_improvement">page me only if a candidate wins by at least</label>
+    <input id="min_improvement" name="min_improvement" type="number" step="0.05"
+           value="{{ fields.min_improvement if fields else '0.20' }}">
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">Live endpoint <span class="hint">(optional)</span></h2>
+    <p class="muted">A URL for this feature's current implementation — hosted or
+      <code>http://localhost:...</code>, either works. Every bench run also calls it with
+      each test case's input and judges the answer alongside every candidate, so the
+      leaderboard shows what you have now next to what could replace it. It is never
+      called on behalf of a candidate model.</p>
+    <label for="endpoint_url">endpoint URL</label>
+    <input id="endpoint_url" name="endpoint_url" type="url"
+           value="{{ fields.endpoint_url if fields and fields.endpoint_url else '' }}"
+           placeholder="https://api.example.com/reply or http://localhost:8000/reply">
+    <div class="row">
+      <div>
+        <label for="endpoint_method">method</label>
+        <input id="endpoint_method" name="endpoint_method" type="text"
+               value="{{ fields.endpoint_method if fields else 'POST' }}">
+      </div>
+      <div>
+        <label for="endpoint_input_field">request field for the input</label>
+        <input id="endpoint_input_field" name="endpoint_input_field" type="text"
+               value="{{ fields.endpoint_input_field if fields else 'input' }}">
+      </div>
+      <div>
+        <label for="endpoint_response_field">response field to read <span class="hint">(dot-path, e.g. data.reply)</span></label>
+        <input id="endpoint_response_field" name="endpoint_response_field" type="text"
+               value="{{ fields.endpoint_response_field if fields else 'output' }}">
+      </div>
+    </div>
+    <label for="endpoint_header">extra header <span class="hint">(optional, "Name: value" — ${VAR} expands from the environment, never committed)</span></label>
+    <input id="endpoint_header" name="endpoint_header" type="text"
+           value="{{ fields.endpoint_header if fields and fields.endpoint_header else '' }}"
+           placeholder="Authorization: Bearer ${MY_API_TOKEN}">
+    <label for="endpoint_timeout_seconds">timeout (seconds)</label>
+    <input id="endpoint_timeout_seconds" name="endpoint_timeout_seconds" type="number"
+           value="{{ fields.endpoint_timeout_seconds if fields else '30' }}">
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0;">Schedule <span class="hint">(optional)</span></h2>
+    <label for="schedule_interval_days">re-run automatically every N days</label>
+    <input id="schedule_interval_days" name="schedule_interval_days" type="number"
+           value="{{ fields.schedule_interval_days if fields and fields.schedule_interval_days else '' }}"
+           placeholder="leave blank for manual runs only">
+    <p class="muted">Needs <code>python -m modelcicd.cli scheduler serve</code> running
+      (or an external cron / Task Scheduler entry calling <code>scheduler run-due</code>)
+      to actually fire — this only sets the cadence.</p>
+  </div>
+
+  {% if project.repo_path %}
+  <div class="card">
+    <h2 style="margin-top:0;">Code target <span class="hint">(optional)</span></h2>
+    <p class="muted">If this feature's model is hardcoded somewhere in the connected repo,
+      name the file and the exact string. After you approve a candidate, a separate,
+      explicitly-confirmed step can then write the new model into that file — this
+      never happens automatically just from approving.</p>
+    <label for="code_file">file <span class="hint">(relative to {{ project.repo_path }})</span></label>
+    <input id="code_file" name="code_file" type="text"
+           value="{{ fields.code_file if fields and fields.code_file else '' }}"
+           placeholder="e.g. app/bot.py">
+    <label for="code_current_model">exact model string hardcoded there right now</label>
+    <input id="code_current_model" name="code_current_model" type="text"
+           value="{{ fields.code_current_model if fields and fields.code_current_model else '' }}"
+           placeholder="e.g. gpt-4o-mini">
+  </div>
+  {% endif %}
+
+  <button type="submit" class="btn btn-primary">Save AI feature</button>
+</form>
+{% endblock %}

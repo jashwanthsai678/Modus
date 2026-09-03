@@ -194,6 +194,23 @@ python -m modelcicd.cli approve --use-case use_cases/my_feature.yaml
 python -m modelcicd.cli ui
 ```
 
+### Or: connect an application and use the guided flow instead
+
+You don't have to hand-write `use_case.yaml`. Connect an application (a
+**project** — just a name, nothing is read from it) and define each of its AI
+features through a wizard — identical from the CLI and the dashboard:
+
+```bash
+python -m modelcicd.cli project create --name "My App"
+python -m modelcicd.cli wizard --project my-app        # asks for the system
+                                                          # prompt, test cases,
+                                                          # rubric, and price/
+                                                          # model preferences
+python -m modelcicd.cli onboarding                      # the full guided flow, any time
+```
+
+See [Projects, the wizard, and a live endpoint](#projects-the-wizard-and-a-live-endpoint) below.
+
 ---
 
 ## CLI reference
@@ -201,19 +218,29 @@ python -m modelcicd.cli ui
 | Command | Cost | What it does |
 |---|---|---|
 | `init` | free | Writes a starting `use_case.yaml` template |
+| `onboarding` | free | Prints the guided quickstart |
+| `project create --name <n> [--description] [--notify-email] [--repo-path <dir> \| --repo-url <url>] [--providers <list>]` | free | Connects a new application |
+| `project list` | free | Lists connected applications |
+| `scan-repo --project <slug> [--scan-model <id>] [--max-files <n>] [--yes]` | **$** | Reads the connected repo with a model to find likely LLM call sites |
+| `wizard [--project <slug>] [--from-scan <index>]` | free | Interactively defines an AI feature — no YAML to hand-write |
+| `apply-code-patch --use-case-name <n> --project <slug> [--yes]` | free | Writes an approved model into its `codeTarget` file — previewed, confirmed |
 | `catalogue` | free | Polls OpenRouter and saves `out/catalogue.json` |
 | `shortlist --use-case <path>` | free | Applies one use case's guardrails to the catalogue |
-| `run --use-case <path>` | **$** | Sandboxes + judges + ranks the shortlist |
-| `status [--use-case <path> \| --use-case-name <name>]` | free | Shows the approved model and any pending candidate |
-| `approve [--use-case <path> \| --use-case-name <name>] [--model <id>]` | free | Promotes a model — the only thing that changes `resolve()` |
+| `run --use-case <path> [--project <slug>]` | **$** | Sandboxes + judges + ranks the shortlist (+ the live endpoint, if configured) |
+| `status [--use-case <path> \| --use-case-name <name>] [--project <slug>]` | free | Shows the approved model and any pending candidate |
+| `approve [--use-case <path> \| --use-case-name <name>] [--model <id>] [--project <slug>]` | free | Promotes a model — the only thing that changes `resolve()` |
+| `scheduler run-due` | **$** | Runs every AI feature that's due right now, once, and exits |
+| `scheduler serve [--interval-minutes <n>]` | **$** | Loops forever, re-checking every AI feature's schedule |
 | `ui [--host <addr>] [--port <n>]` | free | Launches the local dashboard at `http://127.0.0.1:5000` |
 
 Useful `run` flags: `--tier {free,paid-low,paid-mid,paid-high}` to restrict
 which price band is benched, `--models a,b,c` to bench an explicit list
 instead of the guardrail-filtered shortlist, `--limit N` to cap candidate
 count, `--yes` to skip the interactive cost confirmation (for scheduled
-jobs). If installed with `pip install -e .`, every command above also works
-as `modelcicd <command>` instead of `python -m modelcicd.cli <command>`.
+jobs — a `scheduler` run always behaves as if `--yes` was passed, since
+nobody is there to answer). If installed with `pip install -e .`, every
+command above also works as `modelcicd <command>` instead of
+`python -m modelcicd.cli <command>`.
 
 ---
 
@@ -240,6 +267,146 @@ anywhere else, and nothing about it is required to use the CLI. Think
 
 `run` and `status` print the relevant dashboard link after they finish, so
 you don't have to know the URL scheme by heart.
+
+---
+
+## Projects, the wizard, and a live endpoint
+
+A **project** is a connected application — a name, a description, a default
+notify email, a marketplace list (`--providers openrouter,groq,fireworks` —
+default: OpenRouter alone), and optionally the application's own code: a
+local `--repo-path` (must already exist) or a `--repo-url` modelcicd clones
+itself (shallow, read-only — relies entirely on whatever the local git/OS
+credential helper already provides; no credentials handled here). Without
+either, nothing is read from or written to the connected application at all
+— a project exists so several applications' AI features stay grouped, each
+benched and approved on its own. Its AI features live under
+`projects/<slug>/use_cases/`, with their own `state/` and `out/`, exactly
+like the top-level `state/`/`out/` directories already used for an unscoped
+use case.
+
+```bash
+python -m modelcicd.cli project create --name "Support Portal" \
+  --repo-path D:\repos\support-portal \
+  --providers openrouter,groq          # optional — enables the features below
+python -m modelcicd.cli wizard --project support-portal
+```
+
+The wizard — identical from the CLI's interactive prompts and the dashboard's
+"Add an AI feature" form, both going through the same `modelcicd/wizard.py` —
+asks for everything a `use_case.yaml` needs: the system prompt, test cases,
+a rubric, price/context guardrails, the judge model, and who to notify. It
+writes the same YAML schema described below; nothing about how a use case is
+*read* changes because it was written this way.
+
+### Scanning the repo for AI features already in the code
+
+With a repo connected, `scan-repo` reads candidate files with a model to find
+likely LLM call sites — the literal model string and prompt, where present —
+across *any* language or framework, because it's reading for meaning, not
+matching a fixed list of SDK patterns:
+
+```bash
+python -m modelcicd.cli scan-repo --project support-portal
+# candidate files : 14
+# cost            : 14 model call(s)
+# proceed? [y/N]
+#
+# [0] app/bot.py  model=gpt-4o-mini  confidence=high
+#      You are a support agent. Read the ticket and draft a reply...
+
+python -m modelcicd.cli wizard --project support-portal --from-scan 0
+```
+
+**This spends a small amount of money** — one model call per candidate file
+— shown and confirmed first, exactly like `run`. A scan only ever *proposes*:
+picking a candidate pre-fills the wizard's system prompt and code target,
+both still shown and editable before anything is saved, and test cases are
+always still typed in by hand — a scan can identify a prompt, not invent a
+good test case. The same flow exists in the dashboard: a "Scan repo for AI
+features" button on the project page, a results list, "Use this" into the
+same wizard form.
+
+### A live endpoint, for a real baseline
+
+Every AI feature can optionally name its own live endpoint — hosted or
+`http://localhost:...`, both are just a URL:
+
+```yaml
+endpoint:
+  url: http://localhost:8000/reply
+  method: POST
+  inputField: input           # request body = {"input": "<test case text>"}
+  responseField: output       # dot-path into the JSON response, e.g. data.reply
+  headers:
+    Authorization: "Bearer ${SUPPORT_API_KEY}"   # ${VAR} expands from the
+                                                  # environment, never committed
+  timeoutSeconds: 30
+```
+
+When set, every `run` also calls this endpoint once per test case — the same
+input every candidate model gets — and judges the answer through the same
+rubric, blind, exactly like a candidate. The leaderboard then shows a
+**"current (your endpoint)"** row alongside every candidate, so approving a
+model is a real "this beats what you have" decision, not just "this beats
+other candidates." The endpoint is only ever called to capture that one
+comparison row — no candidate is ever routed through it.
+
+### A code target, for an app that isn't integrated with `resolve()` yet
+
+If a project has `--repo-path`, the wizard can read files from it for
+reference (a "Browse a file" link — read-only, never written to except via
+the patch below), and an AI feature can optionally name where its model is
+hardcoded:
+
+```yaml
+codeTarget:
+  file: app/bot.py            # relative to the project's repo_path
+  currentModel: gpt-4o-mini   # what's hardcoded there right now
+```
+
+After you approve a candidate, `apply-code-patch` — from the CLI, or a
+"Preview code change" button on the use case page — shows exactly what would
+change (file, occurrence count, old model → new model) and asks for its own,
+separate confirmation before writing anything:
+
+```bash
+python -m modelcicd.cli apply-code-patch --use-case-name support_bot_reply --project support-portal
+```
+
+This is deliberately never automatic. `state.approve()` — the only function
+that changes what `resolve()` returns — stays a plain state-file write with
+no filesystem side effects. Patching real source is a second, separate,
+always-previewed action: an exact literal string replace (never a regex,
+never AST-aware), refusing rather than guessing if the recorded model string
+isn't found verbatim anymore. modelcicd performs no git operations on your
+repo — committing or reviewing the change is your own normal git workflow.
+If your application already calls `resolve("feature_name")` instead of
+hardcoding a model, you don't need a code target at all: approving already
+changes what it uses, with nothing to patch.
+
+---
+
+## Scheduler
+
+Add a `schedule` block to a use case (by hand, or the wizard's last step) and
+it becomes eligible to run on its own:
+
+```yaml
+schedule:
+  intervalDays: 7
+```
+
+```bash
+python -m modelcicd.cli scheduler serve            # leave this running — checks on an interval
+python -m modelcicd.cli scheduler run-due           # or trigger a single check from cron / Task Scheduler
+```
+
+Either way, being due only ever runs the same `catalogue → guardrails →
+sandbox → judge → rank → notify` loop `run` does — landing, at most, a new
+**pending** candidate and an email. Nothing here calls `approve()`. A model
+still only reaches production when a human clicks Approve, however often the
+platform re-checks.
 
 ---
 
@@ -302,6 +469,23 @@ use_cases/
   codegen_assistant.yaml
 ```
 
+Grouped under a project instead, the same independence holds one level up —
+one connected application, several use cases, each still benched and
+approved on its own:
+
+```
+projects/support-portal/
+  project.yaml
+  use_cases/
+    support_bot_reply.yaml
+    ticket_summarizer.yaml
+  state/
+    support_bot_reply.json
+    ticket_summarizer.json
+  out/
+    20260310T090000Z_support_bot_reply.json
+```
+
 ```python
 from modelcicd.resolver import resolve
 
@@ -331,21 +515,28 @@ committed to your repo, and a config with a key in it is a leaked key.
 
 ```
 modelcicd/
-  catalogue.py    fetch + normalize the model catalogue (free)
-  guardrails.py   filter candidates by price/context/JSON/modality (free)
-  config.py       load and validate a use_case.yaml
-  client.py       the one place this project calls a model (JSON-mode, retried)
-  sandbox.py      run one candidate against a use case's test cases
-  judge.py        blind, pinned-judge scoring against the use case's rubric
-  bench.py        orchestrates sandbox + judge across all candidates
-  rank.py         builds the per-tier leaderboard
-  state.py        what's approved per use case, and its history
-  resolver.py     resolve(use_case) -> the approved model id (the integration point)
-  notify.py       emails a human when a candidate is pending
-  cli.py          the `python -m modelcicd.cli ...` / `modelcicd ...` entrypoint
-  dashboard.py    the local read-only-by-default web view (`cli ui`)
-  templates/      the dashboard's HTML (Jinja2)
-  tests/          a dependency-free test module: python -m modelcicd.tests.test_modelcicd
+  catalogue.py       fetch + normalize the model catalogue (free)
+  guardrails.py      filter candidates by price/context/JSON/modality (free)
+  config.py          load and validate a use_case.yaml (incl. endpoint/schedule/codeTarget blocks)
+  client.py          the one place this project calls a CANDIDATE model (JSON-mode, retried)
+  endpoint_client.py the one place this project calls a use case's OWN live endpoint
+  sandbox.py         run one candidate (or the live endpoint) against a use case's test cases
+  judge.py           blind, pinned-judge scoring against the use case's rubric
+  bench.py           orchestrates sandbox + judge across all candidates + the endpoint
+  rank.py            builds the per-tier leaderboard
+  state.py           what's approved per use case, and its history
+  resolver.py        resolve(use_case) -> the approved model id (the integration point)
+  notify.py          emails a human when a candidate is pending
+  project.py         connects an application — a name, an optional repo, its providers, its AI features
+  code_scan.py       reads a connected repo with a model to find likely LLM call sites
+  wizard.py          turns answers (CLI or dashboard form) into a valid use_case.yaml
+  code_patch.py      the one place this project writes into a connected app's OWN source
+  runner.py          the reusable core of one bench run, shared by `cli run` and the scheduler
+  scheduler.py       re-runs whatever is due, on its own schedule
+  cli.py             the `python -m modelcicd.cli ...` / `modelcicd ...` entrypoint
+  dashboard.py       the local web view (`cli ui`) — same functionality as the CLI
+  templates/         the dashboard's HTML (Jinja2)
+  tests/             a dependency-free test module: python -m modelcicd.tests.test_modelcicd
 examples/
   prep_material/use_case.yaml   a worked example use case
 pyproject.toml    lets you `pip install -e .` for the `modelcicd` command
@@ -378,4 +569,33 @@ judge never being a candidate, tier ranking, stale-state bugs, and so on).
   confidence. Deepen sampling on the shortlist a candidate makes it to,
   never on the whole field.
 - **`approve()` is the only function that changes what `resolve()`
-  returns.** Every other step in the pipeline only ever proposes.
+  returns.** Every other step in the pipeline only ever proposes — including
+  a scheduled run finding a candidate on its own.
+- **A live endpoint captures a baseline; it never runs a candidate.** The
+  leaderboard's "current (your endpoint)" row exists so a human compares a
+  candidate against what they actually have, not just against other
+  candidates — but nothing routes a candidate model through someone else's
+  application.
+- **The CLI and the dashboard write through the same functions, always.**
+  `wizard.to_yaml`, `project.create`, and `state.approve` are each called
+  from exactly one place in both `cli.py` and `dashboard.py` — never
+  reimplemented for the browser — so the two can never quietly drift apart.
+- **Approving a model and patching your source are two separate decisions.**
+  `state.approve()` never touches a filesystem outside `state/`; a
+  `codeTarget` patch always gets its own preview and its own confirmation
+  (`apply-code-patch`, or its own button on the use case page) — writing into
+  someone else's real application is a bigger, harder-to-reverse action than
+  writing a JSON file, and it is never bundled into a click meant to do the
+  smaller one.
+- **A scan proposes; it never writes.** `scan-repo` reads a connected repo
+  with a model to find likely LLM call sites, but the result is only ever a
+  pre-fill — a person still confirms (and can edit) the prompt and test
+  cases through the same wizard every other AI feature goes through. Like
+  `run`, it shows its real cost (one model call per candidate file) before
+  spending anything.
+- **A provider's price/JSON-mode support is only ever what its own API
+  publishes.** Groq's and Fireworks' `/models` endpoints don't guarantee
+  either — those fields come back unknown rather than fabricated, and the
+  existing "unknown is not free" guardrail excludes such models the same
+  way it excludes any other unpriced one. No provider gets a hardcoded price
+  table that could go stale or wrong.

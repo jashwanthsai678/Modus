@@ -67,10 +67,36 @@
     code { background: #1c1f26; padding: 1px 6px; border-radius: 4px; }
     h1 { font-size: 20px; margin-bottom: 4px; }
     h2 { font-size: 15px; color: #cfd3da; margin-top: 28px; }
+
+    label { display: block; font-size: 13px; color: #cfd3da; margin: 12px 0 4px; }
+    label .hint { color: #9aa0aa; font-weight: 400; }
+    input[type=text], input[type=email], input[type=number], input[type=url],
+    textarea, select {
+      width: 100%; box-sizing: border-box; background: #0f1115; color: #e6e6e6;
+      border: 1px solid #2a2d34; border-radius: 6px; padding: 8px 10px;
+      font-size: 14px; font-family: inherit;
+    }
+    textarea { min-height: 90px; resize: vertical; }
+    fieldset { border: 1px solid #23262c; border-radius: 8px; padding: 12px 16px;
+               margin: 10px 0; }
+    fieldset legend { padding: 0 6px; color: #9aa0aa; font-size: 12px;
+                      text-transform: uppercase; letter-spacing: .04em; }
+    .row { display: grid; grid-template-columns: 1fr 2fr 1fr; gap: 10px; }
+    .row3 { display: grid; grid-template-columns: 1fr 2fr 90px; gap: 10px; }
+    .btn { padding: 8px 16px; border: 1px solid #2a2d34; border-radius: 6px;
+           background: #1c1f26; color: #e6e6e6; font-size: 13px; font-weight: 600;
+           cursor: pointer; }
+    .btn:hover { filter: brightness(1.15); }
+    .btn-primary { background: #2456c9; border-color: #2456c9; color: #fff; }
+    .checkline { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
+    .checkline input { width: auto; }
+    .errors { border-color: #5c2626; background: #331414; color: #f5d3d3; }
+    .errors ul { margin: 6px 0 0; padding-left: 18px; }
   </style>
 </head>
 <body>
-  <header><a href="{{ url_for('index') }}">Model CICD</a></header>
+  <header><a href="{{ url_for('index') }}">Model CICD</a>
+    <span class="muted" style="margin-left: 12px;">Projects</span></header>
   <main>{% block content %}{% endblock %}</main>
 </body>
 </html>

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Scan repo — {{ project.name }}{% endblock %}
+{% block content %}
+<p class="muted"><a class="link" href="{{ url_for('project_detail', slug=project.slug) }}">&larr; {{ project.name }}</a></p>
+<h1>Scan the connected repo</h1>
+<p class="muted">{{ project.repo_path }}</p>
+
+<div class="card">
+  <p>An LLM reads each candidate file to recognize LLM call sites — the literal
+    model string and the prompt, when present — so this works across any
+    language, not just a fixed list of SDK patterns. <strong>This spends a small
+    amount of money</strong>: one model call per file.</p>
+  <div class="muted">candidate files found</div>
+  <div>{{ file_count }}</div>
+  <div class="muted" style="margin-top: 6px;">estimated cost</div>
+  <div>{{ file_count }} model call(s)</div>
+
+  {% if file_count == 0 %}
+  <p class="muted" style="margin-top: 10px;">Nothing in this repo matched — no file
+    mentions a known LLM-related keyword.</p>
+  {% else %}
+  <form method="post"
+        onsubmit="return confirm('Scan {{ file_count }} file(s) with a real model call each?\n\nThis spends a small amount of money.');">
+    <button type="submit" class="btn-approve" style="margin-top: 10px;">Scan {{ file_count }} file(s)</button>
+  </form>
+  <p class="muted">or from the CLI:
+    <code>python -m modelcicd.cli scan-repo --project {{ project.slug }}</code></p>
+  {% endif %}
+</div>
+{% endblock %}

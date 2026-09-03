@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Scan results — {{ project.name }}{% endblock %}
+{% block content %}
+<p class="muted"><a class="link" href="{{ url_for('project_detail', slug=project.slug) }}">&larr; {{ project.name }}</a></p>
+<h1>Likely LLM call sites</h1>
+<p class="muted">Pick one to use as a starting point for a new AI feature — you still
+  confirm (and can edit) the prompt, and you always add the test cases yourself.</p>
+
+{% if not candidates %}
+<p class="muted">No likely LLM call sites found. <a class="link"
+   href="{{ url_for('scan_repo_form', slug=project.slug) }}">Scan again</a>?</p>
+{% else %}
+{% for c in candidates %}
+<div class="card">
+  <div class="muted">{{ c.file }}{% if c.line %} — line {{ c.line }}{% endif %}</div>
+  <div>model: <code>{{ c.model or '(none detected)' }}</code>
+    &middot; confidence: {{ c.confidence }}</div>
+  <div class="muted" style="margin-top: 6px;">{{ (c.prompt or '')[:200] }}</div>
+  <a class="btn btn-primary" style="display: inline-block; margin-top: 10px;"
+     href="{{ url_for('new_use_case', slug=project.slug, from_scan=loop.index0) }}">Use this</a>
+</div>
+{% endfor %}
+{% endif %}
+{% endblock %}

@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Code patch — {{ name }}{% endblock %}
+{% block content %}
+<p class="muted"><a class="link" href="{{ url_for('usecase', name=name, project=project.slug) }}">&larr; {{ name }}</a></p>
+<h1>Apply the approved model to your code</h1>
+<p class="muted">This writes into <strong>your connected application's own source</strong> —
+  a separate, further confirmation from approving the model itself. Nothing here
+  changes what <code>resolve()</code> returns; that already happened when you approved.</p>
+
+{% if error %}
+<div class="card errors">{{ error }}</div>
+{% else %}
+<div class="card">
+  <div class="muted">File</div>
+  <div><code>{{ preview.file }}</code></div>
+  <div class="muted" style="margin-top: 10px;">Change</div>
+  <div><code>{{ preview.old }}</code> &rarr; <code>{{ preview.new }}</code></div>
+  <div class="muted" style="margin-top: 10px;">Occurrences that will be replaced</div>
+  <div>{{ preview.occurrences }}</div>
+</div>
+
+<form method="post" action="{{ url_for('code_patch_apply_route', project=project.slug, name=name) }}"
+      onsubmit="return confirm('Write {{ preview.new }} into {{ preview.file }}, replacing {{ preview.occurrences }} occurrence(s) of {{ preview.old }}?\n\nThis edits a real file in your connected repo.');">
+  <button type="submit" class="btn-approve">Apply to {{ code_target.file }}</button>
+</form>
+<p class="muted">or from the CLI:
+  <code>python -m modelcicd.cli apply-code-patch --use-case-name {{ name }} --project {{ project.slug }}</code></p>
+{% endif %}
+{% endblock %}

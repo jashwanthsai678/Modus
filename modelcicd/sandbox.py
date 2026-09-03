@@ -17,7 +17,10 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from . import client as client_module
+from . import endpoint_client as endpoint_client_module
 from .config import TestCase, UseCase
+
+ENDPOINT_LABEL = "current (your endpoint)"
 
 
 async def run_one(model_id: str, uc: UseCase, tc: TestCase) -> dict:
@@ -51,4 +54,34 @@ async def run_candidate(model_id: str, uc: UseCase) -> dict:
         results.append(await run_one(model_id, uc, tc))
     ok = [r for r in results if r["status"] == "ok"]
     return {"model": model_id, "results": results,
+            "counts": {"ok": len(ok), "failed": len(results) - len(ok)}}
+
+
+async def run_endpoint_one(uc: UseCase, tc: TestCase) -> dict:
+    """One test case against the use case's OWN live endpoint — the baseline,
+    not a candidate. Same result shape as `run_one` so nothing downstream
+    (judging, ranking) needs to know the difference."""
+    started = datetime.now(timezone.utc)
+    try:
+        output = await endpoint_client_module.call(
+            uc.endpoint, tc.input, label=f"endpoint[{tc.id}]",
+            timeout_s=uc.endpoint.timeout_seconds)
+    except Exception as exc:                        # noqa: BLE001
+        return {"testCase": tc.id, "status": "failed",
+                "seconds": (datetime.now(timezone.utc) - started).total_seconds(),
+                "error": str(exc)[:300]}
+    return {"testCase": tc.id, "status": "ok",
+            "seconds": (datetime.now(timezone.utc) - started).total_seconds(),
+            "output": output}
+
+
+async def run_endpoint_candidate(uc: UseCase) -> dict:
+    """Every test case against the use case's own endpoint, sequentially —
+    mirrors `run_candidate`, so `bench.py` can treat this exactly like one
+    more candidate's results."""
+    results = []
+    for tc in uc.test_cases:
+        results.append(await run_endpoint_one(uc, tc))
+    ok = [r for r in results if r["status"] == "ok"]
+    return {"model": ENDPOINT_LABEL, "results": results,
             "counts": {"ok": len(ok), "failed": len(results) - len(ok)}}

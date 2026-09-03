@@ -93,6 +93,44 @@ class Notify:
     min_improvement: float = 0.20
 
 
+# ── Live endpoint — an optional baseline to compare candidates against ──────
+
+@dataclass
+class Endpoint:
+    """A use case's own live implementation (hosted or localhost — just a URL).
+
+    CAPTURES A BASELINE, NEVER ROUTES A CANDIDATE. The bench calls this once
+    per test case, with the same input every candidate model gets, and judges
+    the answer through the same rubric — so the leaderboard shows "what you
+    have now" next to every candidate. It is never called on behalf of a
+    candidate model; OpenRouter is still the only thing candidates run through.
+    """
+    url: str
+    method: str = "POST"
+    input_field: str = "input"
+    response_field: str = "output"
+    headers: dict = field(default_factory=dict)
+    timeout_seconds: float = 30.0
+
+
+# ── Code target — where an approved model gets written back to, on request ──
+
+@dataclass
+class CodeTarget:
+    """The file, inside a project's connected repo, that hardcodes this
+    feature's model — and the model string modelcicd believes is written
+    there right now.
+
+    `current_model` IS NOT A ONE-TIME SEED. `code_patch.update_tracked_model`
+    rewrites it after every successful patch, so this field is always this
+    use case's own record of "what's currently in the code" — the exact
+    string the next patch will search for and replace. Nothing here EVER
+    changes what `resolve()` returns; that is still `state.approve()` alone.
+    """
+    file: str                          # relative to the project's repo_path
+    current_model: Optional[str] = None
+
+
 @dataclass
 class UseCase:
     """Everything the loop needs for one place an LLM is called."""
@@ -105,6 +143,9 @@ class UseCase:
     notify: Notify
     judge_model: str = "openai/gpt-4o"
     max_tokens: int = 1200
+    endpoint: Optional[Endpoint] = None       # live baseline to compare candidates against
+    schedule_interval_days: Optional[int] = None  # re-run automatically on this cadence
+    code_target: Optional[CodeTarget] = None  # where to (optionally) patch an approved model back to
     path: Optional[Path] = None      # where this was loaded from, for error messages
 
 
@@ -167,11 +208,33 @@ def load(path) -> UseCase:
                                                 Notify.min_improvement)))
 
     judge = raw.get("judgeModel") or "openai/gpt-4o"
+
+    endpoint = None
+    e = raw.get("endpoint") or {}
+    if e.get("url"):
+        endpoint = Endpoint(
+            url=e["url"], method=(e.get("method") or "POST").upper(),
+            input_field=e.get("inputField", "input"),
+            response_field=e.get("responseField", "output"),
+            headers=dict(e.get("headers") or {}),
+            timeout_seconds=float(e.get("timeoutSeconds", 30.0)))
+
+    sched = raw.get("schedule") or {}
+    interval = sched.get("intervalDays")
+
+    code_target = None
+    ct = raw.get("codeTarget") or {}
+    if ct.get("file"):
+        code_target = CodeTarget(file=ct["file"], current_model=ct.get("currentModel"))
+
     return UseCase(
         name=raw["useCase"], description=raw.get("description", ""),
         system_prompt=raw["systemPrompt"], test_cases=test_cases,
         rubric=default_rubric, guardrails=guardrails, notify=notify,
-        judge_model=judge, max_tokens=int(raw.get("maxTokens", 1200)), path=p)
+        judge_model=judge, max_tokens=int(raw.get("maxTokens", 1200)),
+        endpoint=endpoint,
+        schedule_interval_days=int(interval) if interval else None,
+        code_target=code_target, path=p)
 
 
 def describe(uc: UseCase) -> str:
@@ -186,4 +249,8 @@ def describe(uc: UseCase) -> str:
         f"  tiers         {', '.join(uc.guardrails.tiers)}",
         f"  notify        {uc.notify.email or '(no email configured)'} "
         f"— on a win of at least {uc.notify.min_improvement}",
+        f"  endpoint      {uc.endpoint.url}" if uc.endpoint else "",
+        f"  schedule      every {uc.schedule_interval_days} day(s)"
+        if uc.schedule_interval_days else "",
+        f"  code target   {uc.code_target.file}" if uc.code_target else "",
     ]).replace("\n\n", "\n")

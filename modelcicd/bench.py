@@ -47,7 +47,13 @@ async def _judge_candidate(model_id: str, sandboxed: dict, judge_model: str,
 
 async def run(candidates: list, uc: UseCase, *, judge_model: Optional[str] = None
              ) -> dict:
-    """Every candidate: every test case answered, then every answer judged."""
+    """Every candidate: every test case answered, then every answer judged.
+
+    IF THE USE CASE HAS A LIVE ENDPOINT, IT RIDES ALONG AS ONE MORE ROW. Same
+    test-case inputs, same judge, same rubric — so the leaderboard shows what
+    the use case's own application returns RIGHT NOW next to every candidate.
+    It is a baseline capture, never a candidate: excluded from the
+    judge-is-a-candidate clash check below, and never itself benchmarked."""
     judge_model = judge_model or uc.judge_model
     judge_module.check_judge_not_candidate(judge_model, candidates)
 
@@ -58,7 +64,16 @@ async def run(candidates: list, uc: UseCase, *, judge_model: Optional[str] = Non
             sandboxed = await sandbox_module.run_candidate(model_id, uc)
         return await _judge_candidate(model_id, sandboxed, judge_model, uc)
 
-    results = await asyncio.gather(*(one_candidate(m) for m in candidates))
+    async def one_endpoint() -> dict:
+        sandboxed = await sandbox_module.run_endpoint_candidate(uc)
+        return await _judge_candidate(sandbox_module.ENDPOINT_LABEL, sandboxed,
+                                      judge_model, uc)
+
+    tasks = [one_candidate(m) for m in candidates]
+    if uc.endpoint:
+        tasks.append(one_endpoint())
+
+    results = await asyncio.gather(*tasks)
     return {
         "schema": 1, "ranAt": datetime.now(timezone.utc).isoformat(),
         "useCase": uc.name, "judge": judge_model,

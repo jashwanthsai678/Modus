@@ -1,21 +1,31 @@
 """Model CICD — the whole loop, from the command line.
 
     python -m modelcicd.cli init                              # write a template
+    python -m modelcicd.cli project create --name "My App"     # connect an application
+    python -m modelcicd.cli wizard --project my-app             # define an AI feature interactively
     python -m modelcicd.cli catalogue                          # poll, free
     python -m modelcicd.cli shortlist --use-case examples/prep_material/use_case.yaml
     python -m modelcicd.cli run       --use-case examples/prep_material/use_case.yaml
     python -m modelcicd.cli status    --use-case examples/prep_material/use_case.yaml
     python -m modelcicd.cli approve   --use-case examples/prep_material/use_case.yaml
-    python -m modelcicd.cli ui                                  # local read-only dashboard
+    python -m modelcicd.cli scheduler run-due                  # run whatever is due, once
+    python -m modelcicd.cli scheduler serve                    # ... and keep checking, forever
+    python -m modelcicd.cli ui                                  # local dashboard
 
-ONLY `run` SPENDS MONEY, and it says the cost and asks before it does, unless
-`--yes` is passed for use in a scheduled job.
+ONLY `run` (AND A SCHEDULED `scheduler run-due`/`serve`) SPENDS MONEY. `run`
+says the cost and asks before it does, unless `--yes` is passed; a scheduled
+run always behaves as if `--yes` was passed, because nobody is there to ask.
+
+`apply-code-patch` is the one command that writes into a CONNECTED APP's own
+source (only if that project has `--repo-path` and the feature has a
+`codeTarget`). It always previews the change and asks before writing, and is
+never triggered automatically by `approve` — approving only ever changes
+what `resolve()` returns.
 """
 import argparse
 import asyncio
 import json
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -38,10 +48,9 @@ try:
 except ImportError:
     pass
 
-from modelcicd import (bench as bench_module, catalogue as catalogue_module,   # noqa: E402
-                       config as config_module, guardrails as guardrails_module,
-                       notify as notify_module, rank as rank_module,
-                       state as state_module)
+from modelcicd import (catalogue as catalogue_module, config as config_module,   # noqa: E402
+                       guardrails as guardrails_module, project as project_module,
+                       runner as runner_module, state as state_module)
 
 OUT = _ROOT / "out"
 CATALOGUE_PATH = OUT / "catalogue.json"
@@ -53,18 +62,66 @@ TEMPLATE = _ROOT / "examples" / "prep_material" / "use_case.yaml"
 DASHBOARD_HOST = "127.0.0.1"
 DASHBOARD_PORT = 5000
 
+ONBOARDING = f"""
+MODEL CICD — quickstart
+
+  1. Connect an application (a project — just a name, nothing is scanned).
+     Add --repo-path if your app is already cloned locally and you want the
+     wizard to reference its code, and eventually patch a hardcoded model:
+       python -m modelcicd.cli project create --name "My App" --repo-path D:\repos\my-app
+
+  2. Define an AI feature in it — a guided flow, no YAML to hand-write. With
+     a repo connected, it can also ask which file hardcodes the model:
+       python -m modelcicd.cli wizard --project my-app
+
+  3. See what candidates survive its price/quality guardrails (free):
+       python -m modelcicd.cli shortlist --use-case projects/my-app/use_cases/<name>.yaml --project my-app
+
+  4. Bench it — the only step that spends money, and it asks first:
+       python -m modelcicd.cli run --use-case projects/my-app/use_cases/<name>.yaml --project my-app
+
+  5. See what's approved vs. pending, and approve a winner:
+       python -m modelcicd.cli status  --use-case-name <name> --project my-app
+       python -m modelcicd.cli approve --use-case-name <name> --project my-app
+
+  6. If the feature has a code target (a hardcoded model in your connected
+     repo), write the approved model into it — previewed, confirmed:
+       python -m modelcicd.cli apply-code-patch --use-case-name <name> --project my-app
+
+  7. Or do all of the above from the browser instead:
+       python -m modelcicd.cli ui                        -> http://{DASHBOARD_HOST}:{DASHBOARD_PORT}
+
+  8. Let it re-check on its own (only if the AI feature has a `schedule:`
+     block — set from the wizard, or by hand in its YAML):
+       python -m modelcicd.cli scheduler serve            # leave this running
+       python -m modelcicd.cli scheduler run-due          # or trigger it from cron / Task Scheduler
+
+A model only ever reaches production when a human clicks Approve — everything
+above step 5 only ever proposes. Step 6 is a further, separate confirmation —
+approving never edits your source on its own.
+"""
+
 
 def _load_catalogue(refresh: bool) -> dict:
     if not refresh and CATALOGUE_PATH.exists():
-        cat = catalogue_module.load(CATALOGUE_PATH)
+        cat = catalogue_module.load_or_poll(CATALOGUE_PATH, refresh=False)
         print(f"catalogue: {len(cat.get('models') or {})} model(s) from "
               f"{str(cat.get('fetchedAt'))[:19]}  (--refresh to re-poll)")
         return cat
     print("polling platforms…")
-    cat = catalogue_module.poll()
-    catalogue_module.save(cat, CATALOGUE_PATH)
+    cat = catalogue_module.load_or_poll(CATALOGUE_PATH, refresh=True)
     print(f"  {cat['counts']} -> {len(cat['models'])} logical model(s)")
     return cat
+
+
+def _state_root(args) -> Optional[Path]:
+    project = getattr(args, "project", None)
+    return project_module.state_dir(project) if project else None
+
+
+def _out_dir(args) -> Path:
+    project = getattr(args, "project", None)
+    return project_module.out_dir(project) if project else OUT
 
 
 def cmd_init(args) -> int:
@@ -77,6 +134,159 @@ def cmd_init(args) -> int:
     print(f"wrote a starting use case to {dest}")
     print("Edit the systemPrompt and testCases for your own application, then:")
     print(f"    python -m modelcicd.cli shortlist --use-case {dest}")
+    return 0
+
+
+def cmd_onboarding(args) -> int:
+    print(ONBOARDING)
+    return 0
+
+
+def cmd_project_create(args) -> int:
+    providers = [p.strip() for p in (args.providers or "").split(",") if p.strip()] or None
+    if args.repo_url:
+        print(f"cloning {args.repo_url}…")
+    try:
+        proj = project_module.create(args.name, description=args.description or "",
+                                     notify_email=args.notify_email,
+                                     repo_path=args.repo_path, repo_url=args.repo_url,
+                                     providers=providers)
+    except ValueError as exc:
+        print(str(exc))
+        return 2
+    print(f"connected {proj.name!r} -> project {proj.slug!r}")
+    print(f"providers   {', '.join(proj.providers)}")
+    if proj.repo_path:
+        print(f"repo        {proj.repo_path}  (read-only reference in the wizard; "
+             f"never scanned or written to except via `apply-code-patch`)")
+        print(f"scan it for AI features already in the code:")
+        print(f"    python -m modelcicd.cli scan-repo --project {proj.slug}")
+    print("add an AI feature to it:")
+    print(f"    python -m modelcicd.cli wizard --project {proj.slug}")
+    return 0
+
+
+def cmd_project_list(args) -> int:
+    projects = project_module.list_all()
+    if not projects:
+        print("no projects connected yet.")
+        print('    python -m modelcicd.cli project create --name "My App"')
+        return 0
+    for p in projects:
+        n = len(project_module.list_use_cases(p.slug))
+        print(f"{p.slug:<24} {p.name}  ({n} AI feature(s))")
+    return 0
+
+
+def _scan_results_path(slug: str) -> Path:
+    return project_module.DEFAULT_DIR / slug / "scan_results.json"
+
+
+def cmd_wizard(args) -> int:
+    from . import wizard as wizard_module
+
+    proj = None
+    if args.project:
+        try:
+            proj = project_module.load(args.project)
+        except FileNotFoundError as exc:
+            print(str(exc))
+            return 2
+
+    prefill = None
+    if args.from_scan is not None:
+        if not args.project:
+            print("--from-scan needs --project")
+            return 2
+        results_path = _scan_results_path(args.project)
+        if not results_path.exists():
+            print(f"no scan results for {args.project!r} — run "
+                 f"`scan-repo --project {args.project}` first.")
+            return 2
+        results = json.loads(results_path.read_text(encoding="utf-8"))
+        if not 0 <= args.from_scan < len(results):
+            print(f"--from-scan must be between 0 and {len(results) - 1}.")
+            return 2
+        prefill = results[args.from_scan]
+
+    repo_slug = args.project if (proj and proj.repo_path) else None
+    fields = wizard_module.collect_cli(repo_slug=repo_slug, prefill=prefill)
+    errors = wizard_module.validate(fields)
+    if errors:
+        print("\ncould not save — fix the following:")
+        for e in errors:
+            print(f"  - {e}")
+        return 2
+
+    dest_dir = project_module.use_cases_dir(args.project) if args.project else Path("use_cases")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{fields.name.strip()}.yaml"
+    dest.write_text(wizard_module.to_yaml(fields), encoding="utf-8")
+
+    print(f"\nwrote {dest}")
+    project_flag = f" --project {args.project}" if args.project else ""
+    print("next:")
+    print(f"    python -m modelcicd.cli shortlist --use-case {dest}{project_flag}")
+    return 0
+
+
+def cmd_scan_repo(args) -> int:
+    from . import code_scan as code_scan_module
+
+    try:
+        proj = project_module.load(args.project)
+    except FileNotFoundError as exc:
+        print(str(exc))
+        return 2
+    if not proj.repo_path:
+        print(f"project {args.project!r} has no connected repo path.")
+        return 2
+
+    files = code_scan_module.candidate_files(proj.repo_path, max_files=args.max_files)
+    if not files:
+        print("no candidate files found — nothing looked like it might call an LLM.")
+        return 0
+
+    print(f"candidate files : {len(files)}")
+    print(f"cost            : {len(files)} model call(s), scanned with {args.scan_model}")
+    for f in files[:12]:
+        print(f"   {f}")
+    if len(files) > 12:
+        print(f"   … and {len(files) - 12} more")
+
+    if not args.yes:
+        try:
+            reply = input("\nproceed? [y/N] ").strip().lower()
+        except EOFError:
+            reply = "n"
+        if reply not in ("y", "yes"):
+            print("nothing was spent.")
+            return 1
+
+    results = asyncio.run(code_scan_module.scan_repo(
+        proj.repo_path, scan_model=args.scan_model, max_files=args.max_files))
+    found = [r for r in results if not r.get("error")]
+    errors = [r for r in results if r.get("error")]
+
+    results_path = _scan_results_path(args.project)
+    results_path.parent.mkdir(parents=True, exist_ok=True)
+    results_path.write_text(json.dumps(found, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    print()
+    if not found:
+        print("no likely LLM call sites found.")
+    for i, c in enumerate(found):
+        prompt_preview = (c.get("prompt") or "")[:80].replace("\n", " ")
+        print(f"[{i}] {c['file']}  model={c.get('model')}  "
+             f"confidence={c.get('confidence')}")
+        print(f"     {prompt_preview}")
+    if errors:
+        print(f"\n{len(errors)} file(s) could not be scanned (shown with --verbose in a future pass).")
+
+    if found:
+        print(f"\nsaved to {results_path}")
+        print("use one as a starting point:")
+        print(f"    python -m modelcicd.cli wizard --project {args.project} --from-scan <index>")
     return 0
 
 
@@ -94,24 +304,21 @@ def cmd_shortlist(args) -> int:
     result = guardrails_module.apply(cat, uc.guardrails)
     print()
     print(guardrails_module.summarise(result))
+    if args.project:
+        providers = project_module.load(args.project).providers
+        in_scope = [m for m in result["passed"]
+                   if set(m.get("providers") or []) & set(providers)]
+        print(f"\nof those, {len(in_scope)} are on this project's chosen "
+             f"provider(s): {', '.join(providers)}")
     return 0
-
-
-def _candidates(args, uc, cat: dict) -> list:
-    if args.models:
-        return [m.strip() for m in args.models.split(",") if m.strip()]
-    result = guardrails_module.apply(cat, uc.guardrails)
-    passed = guardrails_module.within_tiers(
-        result["passed"], [args.tier] if args.tier else uc.guardrails.tiers)
-    if args.limit:
-        passed = passed[:args.limit]
-    return [cid for m in passed if (cid := catalogue_module.cheapest_host_id(m))]
 
 
 def cmd_run(args) -> int:
     uc = config_module.load(args.use_case)
     cat = _load_catalogue(args.refresh)
-    candidates = _candidates(args, uc, cat)
+    providers = project_module.load(args.project).providers if args.project else None
+    candidates = runner_module.select_candidates(
+        uc, cat, providers=providers, tier=args.tier, models=args.models, limit=args.limit)
     if not candidates:
         print("no candidates — widen the use case's guardrails or --tier.")
         return 2
@@ -125,6 +332,8 @@ def cmd_run(args) -> int:
         print(f"   {c}")
     if len(candidates) > 12:
         print(f"   … and {len(candidates) - 12} more")
+    if uc.endpoint:
+        print(f"   + your live endpoint ({uc.endpoint.url}) as a baseline comparison")
 
     if not args.yes:
         try:
@@ -136,34 +345,25 @@ def cmd_run(args) -> int:
             return 1
 
     try:
-        result = asyncio.run(bench_module.run(candidates, uc))
+        result = asyncio.run(runner_module.execute(
+            uc, cat, candidates, state_root=_state_root(args), out_dir=_out_dir(args)))
     except Exception as exc:                        # noqa: BLE001
         print(f"\nrefused or failed: {exc}")
         return 3
 
-    state = state_module.load(uc.name)
-    board = rank_module.build(result, cat, approved_model=state.get("approvedModel"))
-    text = rank_module.report(board)
     print()
-    print(text)
+    print(result["report"])
 
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    OUT.mkdir(parents=True, exist_ok=True)
-    (OUT / f"{stamp}_{uc.name}.json").write_text(
-        json.dumps({"bench": result, "board": board}, indent=2, ensure_ascii=False),
-        encoding="utf-8")
-
-    new_state = state_module.record_run(uc.name, board)
-    if new_state.get("pending"):
-        p = new_state["pending"]
-        print(f"\nPENDING: {p['model']} scores {p['score']:.2f}, beating the "
-              f"approved model by the use case's threshold.")
-        notify_module.send_pending(uc.name, new_state, text, to=uc.notify.email)
+    pending = result["state"].get("pending")
+    if pending:
+        print(f"\nPENDING: {pending['model']} scores {pending['score']:.2f}, "
+              f"beating the approved model by the use case's threshold.")
     else:
         print("\nNo candidate beat the approved model by enough to page anyone.")
 
-    print(f"\nview this leaderboard : http://{DASHBOARD_HOST}:{DASHBOARD_PORT}"
-          f"/run/{stamp}_{uc.name}.json")
+    link = (f"/projects/{args.project}/run/{result['out_path'].name}" if args.project
+           else f"/run/{result['out_path'].name}")
+    print(f"\nview this leaderboard : http://{DASHBOARD_HOST}:{DASHBOARD_PORT}{link}")
     print(f"                        (run `python -m modelcicd.cli ui` if it "
           f"isn't already running)")
     return 0
@@ -193,7 +393,7 @@ def cmd_status(args) -> int:
     if not name:
         print("pass --use-case-name or --use-case")
         return 2
-    state = state_module.load(name)
+    state = state_module.load(name, _state_root(args))
     print(f"use case       {state['useCase']}")
     print(f"approved       {state.get('approvedModel') or '(none yet)'}")
     if state.get("approvedScore") is not None:
@@ -205,13 +405,9 @@ def cmd_status(args) -> int:
     else:
         print("pending        (nothing)")
     print(f"history        {len(state.get('history') or [])} run(s)")
-    print(f"dashboard      http://{DASHBOARD_HOST}:{DASHBOARD_PORT}/usecase/{name}")
-    return 0
-
-
-def cmd_ui(args) -> int:
-    from . import dashboard as dashboard_module
-    dashboard_module.serve(host=args.host, port=args.port)
+    link = (f"/projects/{args.project}/usecase/{name}" if args.project
+           else f"/usecase/{name}")
+    print(f"dashboard      http://{DASHBOARD_HOST}:{DASHBOARD_PORT}{link}")
     return 0
 
 
@@ -221,11 +417,104 @@ def cmd_approve(args) -> int:
         print("pass --use-case-name or --use-case")
         return 2
     try:
-        state = state_module.approve(name, args.model)
+        state = state_module.approve(name, args.model, root=_state_root(args))
     except ValueError as exc:
         print(str(exc))
         return 2
     print(f"{name}: approved {state['approvedModel']}")
+
+    if args.project:
+        uc_path = project_module.find_use_case(args.project, name)
+        if uc_path:
+            uc = config_module.load(uc_path)
+            if uc.code_target:
+                print(f"\nthis feature also has a code target ({uc.code_target.file}) "
+                     f"— nothing in your connected repo has changed yet. Apply it:")
+                print(f"    python -m modelcicd.cli apply-code-patch "
+                     f"--use-case-name {name} --project {args.project}")
+    return 0
+
+
+def cmd_apply_code_patch(args) -> int:
+    from . import code_patch as code_patch_module
+
+    try:
+        proj = project_module.load(args.project)
+    except FileNotFoundError as exc:
+        print(str(exc))
+        return 2
+    if not proj.repo_path:
+        print(f"project {args.project!r} has no connected repo path.")
+        return 2
+
+    uc_path = project_module.find_use_case(args.project, args.use_case_name)
+    if not uc_path:
+        print(f"no AI feature named {args.use_case_name!r} in project {args.project!r}.")
+        return 2
+    uc = config_module.load(uc_path)
+    if not uc.code_target:
+        print(f"{uc.name!r} has no code target — nothing to patch.")
+        return 2
+
+    state = state_module.load(uc.name, project_module.state_dir(args.project))
+    new_model = state.get("approvedModel")
+    if not new_model:
+        print(f"nothing is approved yet for {uc.name!r} — approve a candidate first.")
+        return 2
+    old_model = uc.code_target.current_model
+    if not old_model:
+        print(f"{uc.name!r}'s codeTarget has no currentModel recorded — set it in "
+             f"{uc_path} first, so there's something to search for.")
+        return 2
+    if old_model == new_model:
+        print(f"{uc.code_target.file} already tracks {new_model!r} — nothing to do.")
+        return 0
+
+    try:
+        prev = code_patch_module.preview(proj.repo_path, uc.code_target.file, old_model, new_model)
+    except (ValueError, FileNotFoundError) as exc:
+        print(str(exc))
+        return 3
+
+    print(f"file          {prev['file']}")
+    print(f"occurrences   {prev['occurrences']}")
+    print(f"change        {old_model!r} -> {new_model!r}")
+    if not args.yes:
+        try:
+            reply = input("\napply this change to your repo? [y/N] ").strip().lower()
+        except EOFError:
+            reply = "n"
+        if reply not in ("y", "yes"):
+            print("nothing was changed.")
+            return 1
+
+    count = code_patch_module.apply(proj.repo_path, uc.code_target.file, old_model, new_model)
+    code_patch_module.update_tracked_model(uc_path, new_model)
+    print(f"\nreplaced {count} occurrence(s) in {uc.code_target.file}.")
+    return 0
+
+
+def cmd_scheduler_run_due(args) -> int:
+    from . import scheduler as scheduler_module
+    ran = scheduler_module.run_due()
+    if not ran:
+        print("nothing due.")
+        return 0
+    for r in ran:
+        outcome = r.get("pending") or r.get("skipped") or "no pending candidate"
+        print(f"{r['project']}/{r['useCase']}: {outcome}")
+    return 0
+
+
+def cmd_scheduler_serve(args) -> int:
+    from . import scheduler as scheduler_module
+    scheduler_module.serve(interval_minutes=args.interval_minutes)
+    return 0
+
+
+def cmd_ui(args) -> int:
+    from . import dashboard as dashboard_module
+    dashboard_module.serve(host=args.host, port=args.port)
     return 0
 
 
@@ -239,31 +528,80 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("--out", default="use_case.yaml")
     i.add_argument("--force", action="store_true")
 
+    sub.add_parser("onboarding", help="print the guided quickstart")
+
+    proj = sub.add_parser("project", help="connect / list applications")
+    proj_sub = proj.add_subparsers(dest="project_command", required=True)
+    pc = proj_sub.add_parser("create", help="register a new project")
+    pc.add_argument("--name", required=True)
+    pc.add_argument("--description", default="")
+    pc.add_argument("--notify-email", default=None)
+    pc.add_argument("--repo-path", default=None,
+                    help="local path to the application's repo (must exist) — "
+                         "read-only reference in the wizard, and the target for "
+                         "`apply-code-patch`")
+    pc.add_argument("--repo-url", default=None,
+                    help="a git URL to clone instead (shallow, read-only) — "
+                         "mutually exclusive with --repo-path")
+    pc.add_argument("--providers", default=None,
+                    help="comma-separated marketplaces to search for this project's "
+                         "candidates, e.g. openrouter,groq (default: openrouter)")
+    proj_sub.add_parser("list", help="list connected projects")
+
+    w = sub.add_parser("wizard", help="interactively define a new AI feature — no YAML to hand-write")
+    w.add_argument("--project", default=None, help="write into this project's use_cases/ (omit for unscoped)")
+    w.add_argument("--from-scan", type=int, default=None,
+                  help="pre-fill from candidate <index> of this project's last scan-repo run")
+
     sub.add_parser("catalogue", help="poll the platforms (free)")
+
+    sr = sub.add_parser("scan-repo",
+                        help="read the connected repo with a model to find likely LLM call sites")
+    sr.add_argument("--project", required=True)
+    sr.add_argument("--scan-model", default="openai/gpt-4o-mini")
+    sr.add_argument("--max-files", type=int, default=60)
+    sr.add_argument("--yes", action="store_true", help="skip the cost confirmation")
 
     def uc_arg(sp):
         sp.add_argument("--use-case", required=True, help="path to a use_case.yaml")
         sp.add_argument("--refresh", action="store_true")
         return sp
 
-    uc_arg(sub.add_parser("shortlist", help="apply the use case's guardrails (free)"))
+    sl = uc_arg(sub.add_parser("shortlist", help="apply the use case's guardrails (free)"))
+    sl.add_argument("--project", default=None, help="also show how many pass this project's chosen provider(s)")
 
     r = uc_arg(sub.add_parser("run", help="sandbox + judge + rank the shortlist"))
     r.add_argument("--tier", choices=["free", "paid-low", "paid-mid", "paid-high"])
     r.add_argument("--models", default=None, help="comma-separated ids, explicit")
     r.add_argument("--limit", type=int, default=None)
     r.add_argument("--yes", action="store_true", help="skip the cost confirmation")
+    r.add_argument("--project", default=None,
+                  help="scope state/out and candidate providers to this connected project")
 
     s = sub.add_parser("status", help="what is approved and what is pending")
     s.add_argument("--use-case", default=None)
     s.add_argument("--use-case-name", default=None)
+    s.add_argument("--project", default=None)
 
     a = sub.add_parser("approve", help="promote a model — this changes resolve()")
     a.add_argument("--use-case", default=None)
     a.add_argument("--use-case-name", default=None)
     a.add_argument("--model", default=None, help="defaults to whatever is pending")
+    a.add_argument("--project", default=None)
 
-    u = sub.add_parser("ui", help="launch the local read-only dashboard")
+    cp = sub.add_parser("apply-code-patch",
+                        help="write an approved model into its codeTarget file — previewed, confirmed")
+    cp.add_argument("--use-case-name", required=True)
+    cp.add_argument("--project", required=True, help="code targets only exist within a connected project")
+    cp.add_argument("--yes", action="store_true", help="skip the confirmation")
+
+    sch = sub.add_parser("scheduler", help="re-run whatever is due, on its own")
+    sch_sub = sch.add_subparsers(dest="scheduler_command", required=True)
+    sch_sub.add_parser("run-due", help="check every project once, run what's due, exit")
+    srv = sch_sub.add_parser("serve", help="loop forever, checking on an interval")
+    srv.add_argument("--interval-minutes", type=int, default=60)
+
+    u = sub.add_parser("ui", help="launch the local dashboard")
     u.add_argument("--host", default="127.0.0.1")
     u.add_argument("--port", type=int, default=5000)
     return p
@@ -271,9 +609,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    return {"init": cmd_init, "catalogue": cmd_catalogue, "shortlist": cmd_shortlist,
+    if args.command == "project":
+        return {"create": cmd_project_create, "list": cmd_project_list}[args.project_command](args)
+    if args.command == "scheduler":
+        return {"run-due": cmd_scheduler_run_due, "serve": cmd_scheduler_serve}[args.scheduler_command](args)
+    return {"init": cmd_init, "onboarding": cmd_onboarding, "catalogue": cmd_catalogue,
+            "wizard": cmd_wizard, "scan-repo": cmd_scan_repo, "shortlist": cmd_shortlist,
             "run": cmd_run, "status": cmd_status, "approve": cmd_approve,
-            "ui": cmd_ui}[args.command](args)
+            "apply-code-patch": cmd_apply_code_patch, "ui": cmd_ui}[args.command](args)
 
 
 if __name__ == "__main__":
