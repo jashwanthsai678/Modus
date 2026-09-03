@@ -24,16 +24,51 @@ STATE_DIR = ROOT / "state"
 OUT_DIR = ROOT / "out"
 
 
+def _best_per_run(history: list) -> list:
+    """The best score any candidate reached, per past run, oldest first — the
+    ceiling that was available each time, not necessarily what got approved.
+    A run where nothing could be scored contributes no point rather than a
+    fabricated zero."""
+    points = []
+    for run in history[-12:]:
+        scores = [row.get("score") for band in (run.get("tiers") or {}).values()
+                  for row in band if row.get("score") is not None]
+        if scores:
+            points.append(max(scores))
+    return points
+
+
+def _sparkline(points: list, *, width: int = 90, height: int = 26, pad: int = 4
+              ) -> Optional[dict]:
+    """Coordinates for a minimal trend sparkline — the dataviz method's
+    stat-tile 'trend': a de-emphasis line with the latest point in the
+    accent. None when there are fewer than two runs to show a trend across."""
+    if len(points) < 2:
+        return None
+    lo, hi = min(points), max(points)
+    span = (hi - lo) or 1.0
+    n = len(points)
+    xs = [pad + i * (width - 2 * pad) / (n - 1) for i in range(n)]
+    ys = [height - pad - (v - lo) * (height - 2 * pad) / span for v in points]
+    return {"width": width, "height": height,
+            "line": " ".join(f"{x:.1f},{y:.1f}" for x, y in zip(xs, ys)),
+            "last_x": xs[-1], "last_y": ys[-1],
+            "title": " → ".join(f"{v:.2f}" for v in points)}
+
+
 def _all_use_cases() -> list:
-    """Every use case with a state file on disk, alphabetical."""
+    """Every use case with a state file on disk, alphabetical, with a
+    ready-to-render trend sparkline attached."""
     if not STATE_DIR.exists():
         return []
     cases = []
     for p in sorted(STATE_DIR.glob("*.json")):
         try:
-            cases.append(json.loads(p.read_text(encoding="utf-8")))
+            case = json.loads(p.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
+        case["sparkline"] = _sparkline(_best_per_run(case.get("history") or []))
+        cases.append(case)
     return cases
 
 
