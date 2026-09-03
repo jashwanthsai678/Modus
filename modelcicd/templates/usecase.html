@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}{{ state.useCase }} — Model CICD{% endblock %}
+{% block content %}
+<h1>{{ state.useCase }}</h1>
+
+<div class="card">
+  <div class="muted">Approved model</div>
+  <div>
+    {{ state.approvedModel or '(none yet)' }}
+    {% if state.approvedScore is not none %} — score {{ state.approvedScore }}{% endif %}
+  </div>
+  <div class="muted">since {{ state.approvedAt or '-' }}</div>
+</div>
+
+{% if state.pending %}
+<div class="card">
+  <div class="muted">Pending candidate</div>
+  <div>{{ state.pending.model }} — score {{ state.pending.score }}
+    (found {{ state.pending.foundAt }})</div>
+  <div class="muted">approve with:
+    <code>python -m modelcicd.cli approve --use-case-name {{ state.useCase }}</code></div>
+</div>
+{% endif %}
+
+<h2>Runs</h2>
+{% if not runs %}
+<p class="muted">No saved run files found under out/ for this use case.</p>
+{% else %}
+<table>
+  <tr><th>Ran at (UTC stamp)</th><th>File</th></tr>
+  {% for r in runs %}
+  <tr>
+    <td>{{ r.stamp }}</td>
+    <td><a class="link" href="{{ url_for('run_detail', filename=r.filename) }}">{{ r.filename }}</a></td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endblock %}

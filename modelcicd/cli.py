@@ -6,6 +6,7 @@
     python -m modelcicd.cli run       --use-case examples/prep_material/use_case.yaml
     python -m modelcicd.cli status    --use-case examples/prep_material/use_case.yaml
     python -m modelcicd.cli approve   --use-case examples/prep_material/use_case.yaml
+    python -m modelcicd.cli ui                                  # local read-only dashboard
 
 ONLY `run` SPENDS MONEY, and it says the cost and asks before it does, unless
 `--yes` is passed for use in a scheduled job.
@@ -196,6 +197,12 @@ def cmd_status(args) -> int:
     return 0
 
 
+def cmd_ui(args) -> int:
+    from . import dashboard as dashboard_module
+    dashboard_module.serve(host=args.host, port=args.port)
+    return 0
+
+
 def cmd_approve(args) -> int:
     name = _use_case_name(args)
     if not name:
@@ -243,13 +250,18 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--use-case", default=None)
     a.add_argument("--use-case-name", default=None)
     a.add_argument("--model", default=None, help="defaults to whatever is pending")
+
+    u = sub.add_parser("ui", help="launch the local read-only dashboard")
+    u.add_argument("--host", default="127.0.0.1")
+    u.add_argument("--port", type=int, default=5000)
     return p
 
 
 def main() -> int:
     args = build_parser().parse_args()
     return {"init": cmd_init, "catalogue": cmd_catalogue, "shortlist": cmd_shortlist,
-            "run": cmd_run, "status": cmd_status, "approve": cmd_approve}[args.command](args)
+            "run": cmd_run, "status": cmd_status, "approve": cmd_approve,
+            "ui": cmd_ui}[args.command](args)
 
 
 if __name__ == "__main__":

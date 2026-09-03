@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Model CICD — Use cases{% endblock %}
+{% block content %}
+<h1>Use cases</h1>
+<p class="muted">Read-only view over state/ and out/ — nothing on this page can change what resolve() returns.</p>
+
+{% if not cases %}
+<p class="muted">No use case has a state file yet. Run
+  <code>python -m modelcicd.cli run --use-case &lt;path&gt;</code> to produce one.</p>
+{% else %}
+<table>
+  <tr><th>Use case</th><th>Approved model</th><th>Score</th><th>Pending</th><th>Runs</th></tr>
+  {% for c in cases %}
+  <tr>
+    <td><a class="link" href="{{ url_for('usecase', name=c.useCase) }}">{{ c.useCase }}</a></td>
+    <td>{{ c.approvedModel or '—' }}</td>
+    <td>{{ c.approvedScore if c.approvedScore is not none else '—' }}</td>
+    <td>
+      {% if c.pending %}
+        <span class="badge pending">{{ c.pending.model }} ({{ c.pending.score }})</span>
+      {% else %}
+        <span class="badge none">none</span>
+      {% endif %}
+    </td>
+    <td>{{ (c.history or [])|length }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endblock %}

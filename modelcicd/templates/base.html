@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}Model CICD{% endblock %}</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; margin: 0;
+           background: #0f1115; color: #e6e6e6; }
+    header { padding: 16px 24px; border-bottom: 1px solid #2a2d34; }
+    header a { color: #e6e6e6; text-decoration: none; font-weight: 600; }
+    main { padding: 24px; max-width: 1100px; margin: 0 auto; }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0 28px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #23262c;
+             font-size: 14px; }
+    th { color: #9aa0aa; font-weight: 600; text-transform: uppercase; font-size: 11px;
+         letter-spacing: .04em; }
+    tr.approved { background: #10331c; }
+    tr.shortlisted td:first-child { color: #ffcf5c; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
+    .badge.pending { background: #3a2f10; color: #ffcf5c; }
+    .badge.approved { background: #123a20; color: #7ee2a0; }
+    .badge.none { background: #23262c; color: #9aa0aa; }
+    .card { background: #171a21; border: 1px solid #23262c; border-radius: 10px;
+            padding: 16px 20px; margin-bottom: 16px; }
+    a.link { color: #7db2ff; text-decoration: none; }
+    a.link:hover { text-decoration: underline; }
+    .muted { color: #9aa0aa; font-size: 13px; }
+    code { background: #1c1f26; padding: 1px 6px; border-radius: 4px; }
+    h1 { font-size: 20px; margin-bottom: 4px; }
+    h2 { font-size: 15px; color: #cfd3da; margin-top: 28px; }
+  </style>
+</head>
+<body>
+  <header><a href="{{ url_for('index') }}">Model CICD</a></header>
+  <main>{% block content %}{% endblock %}</main>
+</body>
+</html>

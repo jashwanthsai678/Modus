@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}{{ board.useCase }} run — Model CICD{% endblock %}
+{% block content %}
+<h1>{{ board.useCase }}</h1>
+<p class="muted">judge {{ board.judge }} &middot; ran {{ board.ranAt }} &middot;
+  <a class="link" href="{{ url_for('usecase', name=board.useCase) }}">back to use case</a></p>
+
+{% for tier, rows in (board.tiers or {}).items() %}
+<h2>{{ tier|upper }}</h2>
+<table>
+  <tr><th>Model</th><th>Score</th><th>Price out</th><th>Would ship</th><th>Note</th></tr>
+  {% for r in rows %}
+  <tr class="{{ 'approved' if r.isApproved else '' }}{{ ' shortlisted' if r.model in ((board.shortlists or {}).get(tier) or []) else '' }}">
+    <td>{{ r.model }}{% if r.isApproved %} <span class="badge approved">approved</span>{% endif %}</td>
+    <td>{% if r.score is not none %}{{ '%.2f'|format(r.score) }}{% else %}—{% endif %}</td>
+    <td>{% if r.price_out is not none %}${{ '%.2f'|format(r.price_out) }}/M{% else %}—{% endif %}</td>
+    <td>{% if r.wouldShipRate is not none %}{{ (r.wouldShipRate * 100)|round|int }}%{% else %}—{% endif %}</td>
+    <td class="muted">{{ r.error or '' }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endfor %}
+
+<p class="muted">Highlighted rows are within {{ board.noise }} of that tier's best —
+  a tie at one sample per test case, not a ranking.</p>
+{% endblock %}
