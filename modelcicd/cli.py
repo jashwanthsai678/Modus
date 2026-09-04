@@ -24,6 +24,7 @@ what `resolve()` returns.
 """
 import argparse
 import asyncio
+import getpass
 import json
 import sys
 from pathlib import Path
@@ -49,8 +50,9 @@ except ImportError:
     pass
 
 from modelcicd import (catalogue as catalogue_module, config as config_module,   # noqa: E402
-                       guardrails as guardrails_module, project as project_module,
-                       runner as runner_module, state as state_module)
+                       guardrails as guardrails_module, onboarding as onboarding_module,
+                       project as project_module, runner as runner_module,
+                       state as state_module)
 
 OUT = _ROOT / "out"
 CATALOGUE_PATH = OUT / "catalogue.json"
@@ -61,45 +63,6 @@ TEMPLATE = _ROOT / "examples" / "prep_material" / "use_case.yaml"
 # installed just to answer "what URL would this be at".
 DASHBOARD_HOST = "127.0.0.1"
 DASHBOARD_PORT = 5000
-
-ONBOARDING = f"""
-MODEL CICD — quickstart
-
-  1. Connect an application (a project — just a name, nothing is scanned).
-     Add --repo-path if your app is already cloned locally and you want the
-     wizard to reference its code, and eventually patch a hardcoded model:
-       python -m modelcicd.cli project create --name "My App" --repo-path D:\repos\my-app
-
-  2. Define an AI feature in it — a guided flow, no YAML to hand-write. With
-     a repo connected, it can also ask which file hardcodes the model:
-       python -m modelcicd.cli wizard --project my-app
-
-  3. See what candidates survive its price/quality guardrails (free):
-       python -m modelcicd.cli shortlist --use-case projects/my-app/use_cases/<name>.yaml --project my-app
-
-  4. Bench it — the only step that spends money, and it asks first:
-       python -m modelcicd.cli run --use-case projects/my-app/use_cases/<name>.yaml --project my-app
-
-  5. See what's approved vs. pending, and approve a winner:
-       python -m modelcicd.cli status  --use-case-name <name> --project my-app
-       python -m modelcicd.cli approve --use-case-name <name> --project my-app
-
-  6. If the feature has a code target (a hardcoded model in your connected
-     repo), write the approved model into it — previewed, confirmed:
-       python -m modelcicd.cli apply-code-patch --use-case-name <name> --project my-app
-
-  7. Or do all of the above from the browser instead:
-       python -m modelcicd.cli ui                        -> http://{DASHBOARD_HOST}:{DASHBOARD_PORT}
-
-  8. Let it re-check on its own (only if the AI feature has a `schedule:`
-     block — set from the wizard, or by hand in its YAML):
-       python -m modelcicd.cli scheduler serve            # leave this running
-       python -m modelcicd.cli scheduler run-due          # or trigger it from cron / Task Scheduler
-
-A model only ever reaches production when a human clicks Approve — everything
-above step 5 only ever proposes. Step 6 is a further, separate confirmation —
-approving never edits your source on its own.
-"""
 
 
 def _load_catalogue(refresh: bool) -> dict:
@@ -138,7 +101,30 @@ def cmd_init(args) -> int:
 
 
 def cmd_onboarding(args) -> int:
-    print(ONBOARDING)
+    print(onboarding_module.text(dashboard_host=DASHBOARD_HOST, dashboard_port=DASHBOARD_PORT))
+    return 0
+
+
+def cmd_set_key(args) -> int:
+    from . import secrets as secrets_module
+
+    value = args.key or getpass.getpass(f"{args.provider} API key (input hidden): ")
+    if not value.strip():
+        print("no key given — nothing saved.")
+        return 2
+    try:
+        secrets_module.set_key(args.provider, value.strip())
+    except ValueError as exc:
+        print(str(exc))
+        return 2
+    print(f"{args.provider}: key saved to .env")
+    return 0
+
+
+def cmd_keys(args) -> int:
+    from . import secrets as secrets_module
+    for provider, configured in secrets_module.status().items():
+        print(f"{provider:<12} {'configured' if configured else 'not set'}")
     return 0
 
 
@@ -267,6 +253,7 @@ def cmd_scan_repo(args) -> int:
         proj.repo_path, scan_model=args.scan_model, max_files=args.max_files))
     found = [r for r in results if not r.get("error")]
     errors = [r for r in results if r.get("error")]
+    counts = code_scan_module.summary(found)
 
     results_path = _scan_results_path(args.project)
     results_path.parent.mkdir(parents=True, exist_ok=True)
@@ -274,19 +261,31 @@ def cmd_scan_repo(args) -> int:
 
     print()
     if not found:
-        print("no likely LLM call sites found.")
+        print("no likely LLM call sites found. This is expected for code that builds its "
+             "prompts dynamically or through an agent/tool-calling framework — the scanner "
+             "reads for a literal call site, not for that kind of indirection. Define the "
+             "feature directly instead:")
+        print(f"    python -m modelcicd.cli wizard --project {args.project}")
+        return 0
+
+    print(f"found {counts['total']} candidate(s) — {counts['high']} high confidence, "
+         f"{counts['low']} low")
     for i, c in enumerate(found):
         prompt_preview = (c.get("prompt") or "")[:80].replace("\n", " ")
+        flag = "" if c.get("confidence") == "high" else "  [low confidence — verify before using]"
         print(f"[{i}] {c['file']}  model={c.get('model')}  "
-             f"confidence={c.get('confidence')}")
+             f"confidence={c.get('confidence')}{flag}")
         print(f"     {prompt_preview}")
     if errors:
         print(f"\n{len(errors)} file(s) could not be scanned (shown with --verbose in a future pass).")
+    if counts["high"] == 0:
+        print("\nnothing here was high-confidence — worth double-checking against the file "
+             "yourself, or just defining the feature directly:")
+        print(f"    python -m modelcicd.cli wizard --project {args.project}")
 
-    if found:
-        print(f"\nsaved to {results_path}")
-        print("use one as a starting point:")
-        print(f"    python -m modelcicd.cli wizard --project {args.project} --from-scan <index>")
+    print(f"\nsaved to {results_path}")
+    print("use one as a starting point:")
+    print(f"    python -m modelcicd.cli wizard --project {args.project} --from-scan <index>")
     return 0
 
 
@@ -435,6 +434,38 @@ def cmd_approve(args) -> int:
     return 0
 
 
+def cmd_reject(args) -> int:
+    name = _use_case_name(args)
+    if not name:
+        print("pass --use-case-name or --use-case")
+        return 2
+    try:
+        state = state_module.reject(name, root=_state_root(args))
+    except ValueError as exc:
+        print(str(exc))
+        return 2
+    print(f"{name}: dismissed. resolve() is unaffected — this only clears the pending "
+         f"suggestion, it never approves or changes anything.")
+    if state.get("rejected"):
+        print(f"  rejected  {state['rejected'][-1]['model']}")
+    return 0
+
+
+def cmd_pending(args) -> int:
+    items = state_module.all_pending()
+    if not items:
+        print("nothing pending anywhere — every project is caught up.")
+        return 0
+    for item in items:
+        where = f"{item['project']}/{item['useCase']}" if item["project"] else item["useCase"]
+        p = item["pending"]
+        print(f"{where:<40} {p['model']:<40} score {p['score']}  found {p['foundAt']}")
+    print(f"\n{len(items)} pending. Approve or dismiss each:")
+    print("    python -m modelcicd.cli approve --use-case-name <name> [--project <slug>]")
+    print("    python -m modelcicd.cli reject  --use-case-name <name> [--project <slug>]")
+    return 0
+
+
 def cmd_apply_code_patch(args) -> int:
     from . import code_patch as code_patch_module
 
@@ -530,12 +561,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("onboarding", help="print the guided quickstart")
 
+    sk = sub.add_parser("set-key", help="save a platform's API key to .env")
+    sk.add_argument("--provider", required=True, choices=["openrouter", "groq", "fireworks"])
+    sk.add_argument("--key", default=None, help="omit to be prompted (input hidden)")
+
+    sub.add_parser("keys", help="which platforms have a key configured")
+
     proj = sub.add_parser("project", help="connect / list applications")
     proj_sub = proj.add_subparsers(dest="project_command", required=True)
     pc = proj_sub.add_parser("create", help="register a new project")
     pc.add_argument("--name", required=True)
     pc.add_argument("--description", default="")
-    pc.add_argument("--notify-email", default=None)
+    pc.add_argument("--notify-email", required=True,
+                    help="required — every AI feature in this project defaults to it")
     pc.add_argument("--repo-path", default=None,
                     help="local path to the application's repo (must exist) — "
                          "read-only reference in the wizard, and the target for "
@@ -589,6 +627,13 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--model", default=None, help="defaults to whatever is pending")
     a.add_argument("--project", default=None)
 
+    rj = sub.add_parser("reject", help="dismiss the pending candidate — never changes resolve()")
+    rj.add_argument("--use-case", default=None)
+    rj.add_argument("--use-case-name", default=None)
+    rj.add_argument("--project", default=None)
+
+    sub.add_parser("pending", help="everything waiting for review, across every project")
+
     cp = sub.add_parser("apply-code-patch",
                         help="write an approved model into its codeTarget file — previewed, confirmed")
     cp.add_argument("--use-case-name", required=True)
@@ -613,9 +658,11 @@ def main() -> int:
         return {"create": cmd_project_create, "list": cmd_project_list}[args.project_command](args)
     if args.command == "scheduler":
         return {"run-due": cmd_scheduler_run_due, "serve": cmd_scheduler_serve}[args.scheduler_command](args)
-    return {"init": cmd_init, "onboarding": cmd_onboarding, "catalogue": cmd_catalogue,
+    return {"init": cmd_init, "onboarding": cmd_onboarding, "set-key": cmd_set_key,
+            "keys": cmd_keys, "catalogue": cmd_catalogue,
             "wizard": cmd_wizard, "scan-repo": cmd_scan_repo, "shortlist": cmd_shortlist,
             "run": cmd_run, "status": cmd_status, "approve": cmd_approve,
+            "reject": cmd_reject, "pending": cmd_pending,
             "apply-code-patch": cmd_apply_code_patch, "ui": cmd_ui}[args.command](args)
 
 

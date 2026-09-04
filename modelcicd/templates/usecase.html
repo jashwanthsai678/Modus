@@ -10,6 +10,10 @@
 <div class="card flash-success">Approved <strong>{{ approved_flash }}</strong>. This is
   now what <code>resolve("{{ state.useCase }}")</code> returns.</div>
 {% endif %}
+{% if dismissed_flash %}
+<div class="card">Dismissed. Nothing changed — <code>resolve("{{ state.useCase }}")</code>
+  still returns whatever it did before.</div>
+{% endif %}
 {% if error_flash %}
 <div class="card flash-error">{{ error_flash }}</div>
 {% endif %}
@@ -28,12 +32,20 @@
   <div class="muted">Pending candidate</div>
   <div>{{ state.pending.model }} — score {{ state.pending.score }}
     (found {{ state.pending.foundAt }})</div>
-  <form method="post" action="{{ scoped_url('approve', project=project, name=state.useCase) }}"
-        onsubmit="return confirm('Approve {{ state.pending.model }} for {{ state.useCase }}?\n\nThis changes what resolve(\'{{ state.useCase }}\') returns in production.');">
-    <button type="submit" class="btn-approve">Approve {{ state.pending.model }}</button>
-  </form>
-  <div class="muted">or from the CLI:
-    <code>python -m modelcicd.cli approve --use-case-name {{ state.useCase }}{{ ' --project ' + project if project else '' }}</code></div>
+  <div style="display: flex; gap: 10px; align-items: center;">
+    <form method="post" action="{{ scoped_url('approve', project=project, name=state.useCase) }}"
+          onsubmit="return confirm('Approve {{ state.pending.model }} for {{ state.useCase }}?\n\nThis changes what resolve(\'{{ state.useCase }}\') returns in production.');">
+      <button type="submit" class="btn-approve">Approve {{ state.pending.model }}</button>
+    </form>
+    <form method="post" action="{{ scoped_url('reject', project=project, name=state.useCase) }}"
+          onsubmit="return confirm('Dismiss {{ state.pending.model }} for {{ state.useCase }}?\n\nThis does NOT change resolve() — it only clears this suggestion. It may resurface later if a future run finds it again.');">
+      <button type="submit" class="btn">Dismiss</button>
+    </form>
+  </div>
+  <div class="muted" style="margin-top: 8px;">or from the CLI:
+    <code>python -m modelcicd.cli approve --use-case-name {{ state.useCase }}{{ ' --project ' + project if project else '' }}</code>
+    &middot;
+    <code>python -m modelcicd.cli reject --use-case-name {{ state.useCase }}{{ ' --project ' + project if project else '' }}</code></div>
 </div>
 {% endif %}
 

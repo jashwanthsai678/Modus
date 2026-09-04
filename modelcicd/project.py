@@ -117,10 +117,19 @@ def create(name: str, *, description: str = "", notify_email: Optional[str] = No
     `repo_path` doesn't exist — the one field here that actually gets read
     from later, so a typo is worth catching now, not on some future run.
 
+    `notify_email` IS REQUIRED — every AI feature in this project defaults
+    to it for pending-candidate notifications, and a project with nowhere
+    for that to go means the notify step silently degrades to printing at
+    a terminal nobody's watching. Enforced here, not just in the dashboard
+    form, so the CLI and the GUI can never disagree about it.
+
     `repo_path` and `repo_url` are mutually exclusive: a local folder you
     already have, or a URL modelcicd clones itself (shallow) — never both."""
     if not name or not name.strip():
         raise ValueError("a project needs a name.")
+    if not notify_email or not notify_email.strip():
+        raise ValueError("a project needs a notify email — every AI feature in it "
+                         "defaults to this for pending-candidate notifications.")
     if repo_path and repo_url:
         raise ValueError("give either --repo-path or --repo-url, not both.")
     s = slug or slugify(name)

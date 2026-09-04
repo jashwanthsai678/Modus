@@ -26,7 +26,9 @@ from flask import Flask, abort, redirect, render_template, request, url_for
 
 from . import code_patch as code_patch_module
 from . import config as config_module
+from . import onboarding as onboarding_module
 from . import project as project_module
+from . import secrets as secrets_module
 from . import state as state_module
 from . import wizard as wizard_module
 
@@ -132,7 +134,7 @@ def create_app() -> Flask:
         return url_for(endpoint, project=project, **kwargs) if project \
             else url_for(endpoint, **kwargs)
 
-    # ── Projects landing / onboarding ───────────────────────────────────────
+    # ── Home: title, the "new project" CTA, existing projects, the pitch ────
 
     @app.route("/")
     def index():
@@ -141,12 +143,67 @@ def create_app() -> Flask:
         for p in projects:
             p.use_case_count = len(project_module.list_use_cases(p.slug))
         return render_template("index.html", projects=projects, legacy_cases=legacy,
-                              error_flash=request.args.get("error"))
+                              quickstart=onboarding_module.text(),
+                              pending_count=len(state_module.all_pending()))
+
+    @app.route("/projects/new")
+    def connect_project_form():
+        return render_template("connect.html", error=request.args.get("error"),
+                              key_status=secrets_module.status())
+
+    @app.route("/pick-folder")
+    def pick_folder():
+        """Opens a REAL native folder-browser dialog and returns the real
+        path the person picked. This only works because the dashboard's
+        server and the browser viewing it are the same machine — a webpage
+        can never learn a file's true path itself, that's a browser security
+        rule, not something this tool can work around. If tkinter isn't
+        available (not every Python install has it), this fails gracefully
+        — the caller falls back to letting the path be typed by hand."""
+        try:
+            import tkinter
+            from tkinter import filedialog
+            root_window = tkinter.Tk()
+            root_window.withdraw()
+            root_window.attributes("-topmost", True)
+            path = filedialog.askdirectory()
+            root_window.destroy()
+            return {"path": path or ""}
+        except Exception as exc:                     # noqa: BLE001
+            return {"path": "", "error": str(exc)[:200]}
+
+    @app.route("/keys")
+
+    @app.route("/keys")
+    def keys_form():
+        return render_template("keys.html", key_status=secrets_module.status(),
+                              saved=request.args.get("saved"))
+
+    @app.route("/keys", methods=["POST"])
+    def keys_save():
+        saved = []
+        for provider in secrets_module.status():
+            value = (request.form.get(f"{provider}_key") or "").strip()
+            if value:
+                secrets_module.set_key(provider, value)
+                saved.append(provider)
+        return redirect(url_for("keys_form", saved=",".join(saved)), code=303)
+
+    @app.route("/unscoped")
+    def unscoped_use_cases():
+        """The full unscoped-use-case table, always reachable — home only
+        shows it inline when there are no projects yet; once you have real
+        projects it's a link instead, so it stops competing for attention."""
+        return render_template("legacy.html", legacy_cases=_use_cases_in(STATE_DIR))
 
     @app.route("/projects", methods=["POST"])
     def create_project():
         name = (request.form.get("name") or "").strip()
         providers = request.form.getlist("providers") or None
+        for provider in secrets_module.status():
+            value = (request.form.get(f"{provider}_key") or "").strip()
+            if value:
+                secrets_module.set_key(provider, value)
         try:
             proj = project_module.create(
                 name, description=(request.form.get("description") or "").strip(),
@@ -155,7 +212,7 @@ def create_app() -> Flask:
                 repo_url=(request.form.get("repo_url") or "").strip() or None,
                 providers=providers)
         except ValueError as exc:
-            return redirect(url_for("index", error=str(exc)), code=303)
+            return redirect(url_for("connect_project_form", error=str(exc)), code=303)
         return redirect(url_for("project_detail", slug=proj.slug), code=303)
 
     @app.route("/projects/<slug>")
@@ -245,12 +302,14 @@ def create_app() -> Flask:
 
     @app.route("/projects/<slug>/scan/results")
     def scan_results(slug):
+        from . import code_scan as code_scan_module
         try:
             proj = project_module.load(slug)
         except FileNotFoundError:
             abort(404, f"no project at {slug!r}")
         candidates = _load_scan_results(slug)
-        return render_template("scan_results.html", project=proj, candidates=candidates)
+        return render_template("scan_results.html", project=proj, candidates=candidates,
+                              summary=code_scan_module.summary(candidates))
 
     # ── Use case detail / approve / run detail — scoped and unscoped ────────
 
@@ -276,7 +335,7 @@ def create_app() -> Flask:
         state_root, out_dir = _roots(project)
         state = state_module.load(name, state_root)
         known = bool(state.get("approvedModel") or state.get("pending")
-                     or state.get("history"))
+                     or state.get("history") or state.get("rejected"))
         if not known:
             abort(404, f"no state recorded yet for use case {name!r}")
         runs = [{"filename": p.name, "stamp": p.name.split("_", 1)[0]}
@@ -285,6 +344,7 @@ def create_app() -> Flask:
         return render_template("usecase.html", state=state, runs=runs, project=project,
                               code_target=code_target,
                               approved_flash=request.args.get("approved"),
+                              dismissed_flash=request.args.get("dismissed"),
                               error_flash=request.args.get("error"))
 
     app.add_url_rule("/usecase/<path:name>", "usecase", usecase)
@@ -315,6 +375,27 @@ def create_app() -> Flask:
     app.add_url_rule("/usecase/<path:name>/approve", "approve", approve, methods=["POST"])
     app.add_url_rule("/projects/<project>/usecase/<path:name>/approve", "approve",
                      approve, methods=["POST"])
+
+    def reject(name, project=None):
+        """Dismisses the pending candidate. Calls `state.reject()` — never
+        `state.approve()` — so this can never be the thing that changes what
+        `resolve()` returns, only what's left waiting for review."""
+        state_root, _ = _roots(project)
+        try:
+            state_module.reject(name, root=state_root)
+        except ValueError as exc:
+            return redirect(scoped_url("usecase", project=project, name=name,
+                                       error=str(exc)), code=303)
+        return redirect(scoped_url("usecase", project=project, name=name,
+                                   dismissed="1"), code=303)
+
+    app.add_url_rule("/usecase/<path:name>/reject", "reject", reject, methods=["POST"])
+    app.add_url_rule("/projects/<project>/usecase/<path:name>/reject", "reject",
+                     reject, methods=["POST"])
+
+    @app.route("/pending")
+    def pending_list():
+        return render_template("pending.html", items=state_module.all_pending())
 
     def run_detail(filename, project=None):
         # `.name` strips any directory component a crafted URL might smuggle

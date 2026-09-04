@@ -1,63 +1,20 @@
 {% extends "base.html" %}
-{% block title %}Model CICD — Projects{% endblock %}
+{% block title %}Model CICD{% endblock %}
 {% block content %}
-<h1>Projects</h1>
-<p class="muted">Every application you've connected. Each one gets its own AI features,
-  each benchmarked and approved independently.</p>
-
-{% if error_flash %}
-<div class="card errors">{{ error_flash }}</div>
-{% endif %}
-
-{% if not projects and not legacy_cases %}
-<div class="card">
-  <h2 style="margin-top:0;">Get started</h2>
-  <p class="muted">Nothing connected yet. Three steps:</p>
-  <ol>
-    <li>Connect the application below — just a name, nothing is read from it.</li>
-    <li>Add an AI feature to it — a guided form asks for the system prompt,
-      test cases, a rubric, and your price/model preferences.</li>
-    <li>Run the bench. A human (you) approves whichever candidate should go
-      to production — nothing switches on its own.</li>
-  </ol>
-  <p class="muted">Prefer the terminal? <code>python -m modelcicd.cli onboarding</code>
-    prints the same flow as CLI commands.</p>
-</div>
-{% endif %}
+<h1>Model CICD</h1>
+<p class="muted">Continuous model discovery, sandboxed benchmarking, and human-approved
+  promotion for every place your application calls an LLM.</p>
 
 <div class="card">
-  <h2 style="margin-top:0;">Connect a project</h2>
-  <form method="post" action="{{ url_for('create_project') }}">
-    <label for="name">Application name</label>
-    <input id="name" name="name" type="text" required placeholder="e.g. Support Portal">
-    <label for="description">Description <span class="hint">(optional)</span></label>
-    <input id="description" name="description" type="text" placeholder="what it does">
-    <label for="notify_email">Notify email <span class="hint">(optional — default for every feature in it)</span></label>
-    <input id="notify_email" name="notify_email" type="email" placeholder="you@example.com">
-    <label for="repo_path">Repo path <span class="hint">(optional — a local folder, already on this machine, for
-      read-only reference/scanning in the wizard and as the target for a code patch after approval)</span></label>
-    <input id="repo_path" name="repo_path" type="text" placeholder="D:\repos\my-app">
-    <label for="repo_url">...or a git URL <span class="hint">(optional — modelcicd clones it, shallow and read-only;
-      give either this or a repo path, not both)</span></label>
-    <input id="repo_url" name="repo_url" type="text" placeholder="https://github.com/acme/my-app.git">
-    <label>Marketplaces to search <span class="hint">(default: OpenRouter)</span></label>
-    <div class="checkline">
-      <input id="prov-openrouter" name="providers" type="checkbox" value="openrouter" checked>
-      <label for="prov-openrouter" style="margin:0;">OpenRouter</label>
-    </div>
-    <div class="checkline">
-      <input id="prov-groq" name="providers" type="checkbox" value="groq">
-      <label for="prov-groq" style="margin:0;">Groq</label>
-    </div>
-    <div class="checkline">
-      <input id="prov-fireworks" name="providers" type="checkbox" value="fireworks">
-      <label for="prov-fireworks" style="margin:0;">Fireworks</label>
-    </div>
-    <button type="submit" class="btn btn-primary" style="margin-top: 14px;">Connect</button>
-  </form>
+  <a class="btn btn-primary" href="{{ url_for('connect_project_form') }}" style="font-size: 15px; padding: 10px 20px;">+ New Project</a>
+  <span class="muted" style="margin-left: 10px;">connect an application to start tracking its AI features</span>
+  {% if pending_count %}
+  <a class="link" style="margin-left: 16px;" href="{{ url_for('pending_list') }}">{{ pending_count }} pending review{{ 's' if pending_count != 1 else '' }} &rarr;</a>
+  {% endif %}
 </div>
 
 {% if projects %}
+<h2>Your projects</h2>
 <table>
   <tr><th>Project</th><th>Description</th><th>AI features</th><th>Connected</th></tr>
   {% for p in projects %}
@@ -72,37 +29,70 @@
 {% endif %}
 
 {% if legacy_cases %}
-<h2>Unscoped use cases</h2>
-<p class="muted">Run directly with <code>--use-case &lt;path&gt;</code>, outside of any project.</p>
-<table>
-  <tr><th>Use case</th><th>Approved model</th><th>Score</th><th>Pending</th><th>Runs</th><th>Trend</th></tr>
-  {% for c in legacy_cases %}
-  <tr>
-    <td><a class="link" href="{{ url_for('usecase', name=c.useCase) }}">{{ c.useCase }}</a></td>
-    <td>{{ c.approvedModel or '—' }}</td>
-    <td>{{ c.approvedScore if c.approvedScore is not none else '—' }}</td>
-    <td>
-      {% if c.pending %}
-        <span class="badge pending">{{ c.pending.model }} ({{ c.pending.score }})</span>
-      {% else %}
-        <span class="badge none">none</span>
-      {% endif %}
-    </td>
-    <td>{{ (c.history or [])|length }}</td>
-    <td>
-      {% if c.sparkline %}
-      <svg width="{{ c.sparkline.width }}" height="{{ c.sparkline.height }}" role="img" class="sparkline">
-        <title>best score found per run: {{ c.sparkline.title }}</title>
-        <polyline points="{{ c.sparkline.line }}" fill="none" stroke="#9aa0aa"
-                  stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
-        <circle cx="{{ c.sparkline.last_x }}" cy="{{ c.sparkline.last_y }}" r="4" fill="#3987e5" />
-      </svg>
-      {% else %}
-      <span class="muted">not enough runs yet</span>
-      {% endif %}
-    </td>
-  </tr>
-  {% endfor %}
-</table>
+  {% if projects %}
+  <p class="muted">{{ legacy_cases|length }} unscoped use case(s) also exist, outside any
+    project — <a class="link" href="{{ url_for('unscoped_use_cases') }}">view them</a>.</p>
+  {% else %}
+    {% include "_unscoped_table.html" %}
+  {% endif %}
 {% endif %}
+
+<h2>What this is</h2>
+<div class="card">
+  <p>A self-hosted tool that continuously discovers, benchmarks, and lets you approve
+    which LLM your application actually uses — separately, for each specific feature
+    that calls one. It doesn't look for "the best model" in general; it finds the best
+    model <strong>for one job</strong>, tested against that job's own test cases and
+    scored against a rubric written for that job.</p>
+  <p class="muted" style="margin-bottom:0;">
+    <code>from modelcicd.resolver import resolve</code><br>
+    <code>model = resolve("support_bot_reply", fallback="gpt-4o-mini")</code>
+  </p>
+</div>
+
+<h2>Why people use it</h2>
+<div class="card">
+  <ul style="margin:0;">
+    <li>New, cheaper, or better models ship every few weeks — nobody manually re-checks,
+      so most teams either overpay or never find out something better exists.</li>
+    <li>A quality regression from a model swap is usually invisible until a user hits it.</li>
+    <li>"Why are we using this model" is usually answered from memory, not evidence.</li>
+    <li>A silent model swap in production is a real risk — it should require the same
+      sign-off a dependency upgrade would get.</li>
+  </ul>
+</div>
+
+<h2>What value it adds</h2>
+<div class="card">
+  <ul style="margin:0;">
+    <li><strong>Lower cost without guessing</strong> — every candidate is filtered by your
+      price ceiling before anything is spent.</li>
+    <li><strong>Quality protected, not just cost</strong> — nothing gets proposed without
+      first being scored, blind, against the rubric that feature's own owner wrote.</li>
+    <li><strong>A record that survives memory</strong> — every run, candidate, score, and
+      approval is saved with a timestamp.</li>
+    <li><strong>One decision point</strong> — a human sees the evidence and clicks Approve;
+      nothing changes silently.</li>
+  </ul>
+</div>
+
+<h2>How to use it — from here</h2>
+<div class="card">
+  <ol style="margin:0;">
+    <li><strong>+ New Project</strong> above — connect an application (optionally with its
+      repo, for scanning and later patching).</li>
+    <li>Scan the repo for AI features already in the code, or add one by hand — a guided
+      form, no YAML to write.</li>
+    <li>Run the bench (the only step that spends money — it shows the cost and asks first).</li>
+    <li>Review the leaderboard and click Approve on whichever candidate should go to
+      production. Nothing switches on its own.</li>
+  </ol>
+</div>
+
+<h2>How to use it — from the CLI</h2>
+<div class="card">
+  <p class="muted">Same tool, same files — every command above has a CLI equivalent, and
+    either one always leaves the other consistent:</p>
+  <pre style="overflow-x: auto; white-space: pre; font-family: monospace; font-size: 12.5px; margin: 0;">{{ quickstart }}</pre>
+</div>
 {% endblock %}

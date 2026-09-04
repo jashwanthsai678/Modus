@@ -78,6 +78,17 @@ def estimate(files: list) -> dict:
     return {"files": len(files), "calls": len(files)}
 
 
+def summary(results: list) -> dict:
+    """Counts by confidence — lets a caller say "3 high, 2 low" instead of
+    just dumping a list, so a low-confidence or empty result reads as its
+    own actionable state rather than quietly looking the same as success.
+    This never claims the scanner found nothing wrong with the code it
+    DIDN'T flag — only how much to trust what it DID flag."""
+    high = sum(1 for r in results if r.get("confidence") == "high")
+    low = sum(1 for r in results if r.get("confidence") != "high")
+    return {"high": high, "low": low, "total": len(results)}
+
+
 _PROMPT = """You are reading ONE source file to find where it calls an LLM API to
 generate text (a chat/completion/generation call to any provider — OpenAI,
 Anthropic, Google, Groq, a self-hosted model, anything). This is a code-reading

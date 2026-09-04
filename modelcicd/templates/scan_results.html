@@ -7,14 +7,28 @@
   confirm (and can edit) the prompt, and you always add the test cases yourself.</p>
 
 {% if not candidates %}
-<p class="muted">No likely LLM call sites found. <a class="link"
-   href="{{ url_for('scan_repo_form', slug=project.slug) }}">Scan again</a>?</p>
+<div class="card">
+  <p>No likely LLM call sites found. This is expected for code that builds its prompts
+    dynamically or through an agent/tool-calling framework — the scanner reads for a
+    literal call site, not that kind of indirection. Define the feature directly instead:</p>
+  <a class="btn btn-primary" href="{{ url_for('new_use_case', slug=project.slug) }}">Add an AI feature manually</a>
+  <a class="btn" href="{{ url_for('scan_repo_form', slug=project.slug) }}">Scan again</a>
+</div>
 {% else %}
+<p class="muted">{{ summary.high }} high confidence, {{ summary.low }} low.</p>
+{% if summary.high == 0 %}
+<div class="card errors">
+  Nothing here was high-confidence — worth double-checking against the file yourself
+  before using one, or
+  <a class="link" href="{{ url_for('new_use_case', slug=project.slug) }}">define the feature directly</a>.
+</div>
+{% endif %}
 {% for c in candidates %}
 <div class="card">
   <div class="muted">{{ c.file }}{% if c.line %} — line {{ c.line }}{% endif %}</div>
   <div>model: <code>{{ c.model or '(none detected)' }}</code>
-    &middot; confidence: {{ c.confidence }}</div>
+    &middot; confidence: {{ c.confidence }}
+    {% if c.confidence != 'high' %}<span class="badge pending">verify before using</span>{% endif %}</div>
   <div class="muted" style="margin-top: 6px;">{{ (c.prompt or '')[:200] }}</div>
   <a class="btn btn-primary" style="display: inline-block; margin-top: 10px;"
      href="{{ url_for('new_use_case', slug=project.slug, from_scan=loop.index0) }}">Use this</a>

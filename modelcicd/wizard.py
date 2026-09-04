@@ -48,6 +48,7 @@ class WizardFields:
     schedule_interval_days: Optional[int] = None
     code_file: Optional[str] = None            # relative to the project's repo_path
     code_current_model: Optional[str] = None   # the exact string hardcoded there right now
+    estimated_calls_per_day: Optional[int] = None   # rough usage, for rate-limit context
 
 
 def validate(f: WizardFields) -> list:
@@ -116,6 +117,8 @@ def to_yaml(f: WizardFields) -> str:
         doc["schedule"] = {"intervalDays": int(f.schedule_interval_days)}
     if f.code_file:
         doc["codeTarget"] = {"file": f.code_file, "currentModel": f.code_current_model}
+    if f.estimated_calls_per_day:
+        doc["usage"] = {"callsPerDay": int(f.estimated_calls_per_day)}
     return yaml.safe_dump(doc, sort_keys=False, allow_unicode=True)
 
 
@@ -207,6 +210,9 @@ def collect_cli(prompt_fn: Callable = input, *, repo_slug: Optional[str] = None,
     f.endpoint_url = endpoint_url or None
     interval = _ask(prompt_fn, "re-run automatically every N days (optional)")
     f.schedule_interval_days = int(interval) if interval else None
+    calls = _ask(prompt_fn, "approximate calls per day this feature will get "
+                            "(optional — used to flag rate-limit risk, never to filter candidates)")
+    f.estimated_calls_per_day = int(calls) if calls else None
 
     if repo_slug:
         default_file, default_model = "", ""
@@ -280,4 +286,6 @@ def from_form(get_list: Callable, get: Callable) -> WizardFields:
     f.schedule_interval_days = int(interval) if interval else None
     f.code_file = get("code_file", "").strip() or None
     f.code_current_model = get("code_current_model", "").strip() or None
+    calls = get("estimated_calls_per_day", "").strip()
+    f.estimated_calls_per_day = int(calls) if calls else None
     return f

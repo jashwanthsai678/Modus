@@ -42,12 +42,21 @@ async def _judge_candidate(model_id: str, sandboxed: dict, judge_model: str,
                        "generation_failed": sum(1 for j in judged
                                                 if j["status"] == "failed"),
                        "judge_failed": sum(1 for j in judged
-                                           if j["status"] == "judge_failed")}}
+                                           if j["status"] == "judge_failed"),
+                       "rate_limited": sum(1 for j in judged
+                                           if j["status"] == "rate_limited")}}
 
 
-async def run(candidates: list, uc: UseCase, *, judge_model: Optional[str] = None
-             ) -> dict:
+async def run(candidates: list, uc: UseCase, *, judge_model: Optional[str] = None,
+             provider_by_model: Optional[dict] = None) -> dict:
     """Every candidate: every test case answered, then every answer judged.
+
+    EACH CANDIDATE IS CALLED THROUGH WHICHEVER PLATFORM IT ACTUALLY CAME
+    FROM. `provider_by_model` (built by `catalogue.provider_map`) maps a
+    candidate id to "openrouter"/"groq"/"fireworks"; a candidate missing
+    from it — e.g. one named directly via `--models` — falls back to
+    OpenRouter, today's only behavior. The JUDGE always calls through
+    OpenRouter regardless, unchanged from before this existed.
 
     IF THE USE CASE HAS A LIVE ENDPOINT, IT RIDES ALONG AS ONE MORE ROW. Same
     test-case inputs, same judge, same rubric — so the leaderboard shows what
@@ -60,8 +69,9 @@ async def run(candidates: list, uc: UseCase, *, judge_model: Optional[str] = Non
     gate = asyncio.Semaphore(CANDIDATE_CONCURRENCY)
 
     async def one_candidate(model_id: str) -> dict:
+        provider = (provider_by_model or {}).get(model_id, "openrouter")
         async with gate:
-            sandboxed = await sandbox_module.run_candidate(model_id, uc)
+            sandboxed = await sandbox_module.run_candidate(model_id, uc, provider=provider)
         return await _judge_candidate(model_id, sandboxed, judge_model, uc)
 
     async def one_endpoint() -> dict:
@@ -80,3 +90,41 @@ async def run(candidates: list, uc: UseCase, *, judge_model: Optional[str] = Non
         "testCases": len(uc.test_cases), "candidates": len(candidates),
         "results": list(results),
     }
+
+
+async def rejudge_for_spread(bench_result: dict, uc: UseCase, judge_model: str,
+                             model_ids: list, *, repeats: int = 3) -> dict:
+    """Re-scores the ALREADY-GENERATED outputs of just the given candidates
+    (the tie-zone ones a caller identified from `rank.build`'s shortlists)
+    several times each, to surface judge-side noise the single-sample
+    pipeline can't see on its own. No candidate is re-run — every output
+    here already exists in `bench_result`; this only spends extra judge
+    calls, and only on the shortlist, never the whole field.
+
+    Returns {model_id: mean_spread}, averaged across that model's test
+    cases — a model with no scoreable test cases in the given result is
+    simply absent from the returned dict, not an error."""
+    by_id = {tc.id: tc for tc in uc.test_cases}
+    by_model = {r["model"]: r for r in bench_result.get("results") or []}
+    gate = asyncio.Semaphore(JUDGE_CONCURRENCY)
+
+    async def one_test_case(model_id: str, tc_result: dict) -> Optional[float]:
+        tc = by_id.get(tc_result.get("testCase"))
+        if tc_result.get("status") != "ok" or not tc:
+            return None
+        async with gate:
+            r = await judge_module.score_repeated(
+                model_id, judge_model, uc, tc, tc_result["output"], repeats=repeats)
+        return r["spread"]
+
+    async def one_model(model_id: str) -> tuple:
+        entry = by_model.get(model_id)
+        if not entry:
+            return model_id, None
+        spreads = await asyncio.gather(
+            *(one_test_case(model_id, tc) for tc in entry.get("testCases") or []))
+        real = [s for s in spreads if s is not None]
+        return model_id, (round(sum(real) / len(real), 3) if real else None)
+
+    pairs = await asyncio.gather(*(one_model(m) for m in model_ids))
+    return {model_id: spread for model_id, spread in pairs if spread is not None}

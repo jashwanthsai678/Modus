@@ -108,3 +108,21 @@ async def score_one(model_id: str, judge_model: str, uc: UseCase, tc: TestCase,
     return {"testCase": tc.id, "status": "ok", "scores": scores,
             "weighted": weighted, "reasons": data.get("reasons") or {},
             "wouldShip": bool(data.get("wouldShip"))}
+
+
+async def score_repeated(model_id: str, judge_model: str, uc: UseCase, tc: TestCase,
+                         output, *, repeats: int = 3) -> dict:
+    """Scores the SAME already-generated answer several times, to surface
+    JUDGE-side noise — not candidate noise, which the pipeline already
+    samples once per test case via `bench.py`. A close call between two
+    candidates can look like a confident tie on a single sample even when
+    the judge itself isn't consistent about it; this is what would show
+    that, without spending anything extra on the candidates themselves."""
+    results = [await score_one(model_id, judge_model, uc, tc, output) for _ in range(repeats)]
+    scored = [r["weighted"] for r in results if r.get("status") == "ok"]
+    if not scored:
+        return {"weighted": None, "spread": None, "scores": []}
+    ordered = sorted(scored)
+    median = ordered[len(ordered) // 2]
+    return {"weighted": round(median, 3), "spread": round(max(scored) - min(scored), 3),
+            "scores": scored}

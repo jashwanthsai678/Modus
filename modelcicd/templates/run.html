@@ -27,6 +27,8 @@
       <strong>{{ '%.2f'|format(r.score) }}</strong> / 5 &middot; {{ r.model }}<br>
       price {% if r.price_out is not none %}${{ '%.2f'|format(r.price_out) }}/M{% else %}unknown{% endif %}
       &middot; would ship {% if r.wouldShipRate is not none %}{{ (r.wouldShipRate * 100)|round|int }}%{% else %}—{% endif %}
+      {% if r.judgeSpread is not none %}<br>judge spread &plusmn;{{ '%.2f'|format(r.judgeSpread) }}
+      across repeats{% endif %}
     </div>
   </div>
   {% endfor %}
@@ -42,11 +44,12 @@
   <tr><th>Model</th><th>Score</th><th>Price out</th><th>Would ship</th><th>Note</th></tr>
   {% for r in rows %}
   <tr class="{{ 'approved' if r.isApproved else '' }}{{ ' shortlisted' if r.model in ((board.shortlists or {}).get(tier) or []) else '' }}">
-    <td>{{ r.model }}{% if r.isApproved %} <span class="badge approved">approved</span>{% endif %}</td>
-    <td>{% if r.score is not none %}{{ '%.2f'|format(r.score) }}{% else %}—{% endif %}</td>
+    <td>{{ r.model }}{% if r.isApproved %} <span class="badge approved">approved</span>{% endif %}
+      {% if r.rateLimited %} <span class="badge pending">rate limited</span>{% endif %}</td>
+    <td>{% if r.score is not none %}{{ '%.2f'|format(r.score) }}{% if r.judgeSpread is not none %}<span class="muted"> (&plusmn;{{ '%.2f'|format(r.judgeSpread) }} judge spread)</span>{% endif %}{% else %}—{% endif %}</td>
     <td>{% if r.price_out is not none %}${{ '%.2f'|format(r.price_out) }}/M{% else %}—{% endif %}</td>
     <td>{% if r.wouldShipRate is not none %}{{ (r.wouldShipRate * 100)|round|int }}%{% else %}—{% endif %}</td>
-    <td class="muted">{{ r.error or '' }}</td>
+    <td class="muted">{{ r.rateLimitNote or r.error or '' }}</td>
   </tr>
   {% endfor %}
 </table>

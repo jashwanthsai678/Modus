@@ -219,6 +219,8 @@ See [Projects, the wizard, and a live endpoint](#projects-the-wizard-and-a-live-
 |---|---|---|
 | `init` | free | Writes a starting `use_case.yaml` template |
 | `onboarding` | free | Prints the guided quickstart |
+| `set-key --provider {openrouter,groq,fireworks} [--key <value>]` | free | Saves a platform's API key to `.env` (prompts, hidden, if `--key` omitted) |
+| `keys` | free | Which platforms have a key configured |
 | `project create --name <n> [--description] [--notify-email] [--repo-path <dir> \| --repo-url <url>] [--providers <list>]` | free | Connects a new application |
 | `project list` | free | Lists connected applications |
 | `scan-repo --project <slug> [--scan-model <id>] [--max-files <n>] [--yes]` | **$** | Reads the connected repo with a model to find likely LLM call sites |
@@ -229,6 +231,8 @@ See [Projects, the wizard, and a live endpoint](#projects-the-wizard-and-a-live-
 | `run --use-case <path> [--project <slug>]` | **$** | Sandboxes + judges + ranks the shortlist (+ the live endpoint, if configured) |
 | `status [--use-case <path> \| --use-case-name <name>] [--project <slug>]` | free | Shows the approved model and any pending candidate |
 | `approve [--use-case <path> \| --use-case-name <name>] [--model <id>] [--project <slug>]` | free | Promotes a model — the only thing that changes `resolve()` |
+| `reject [--use-case <path> \| --use-case-name <name>] [--project <slug>]` | free | Dismisses the pending candidate — never changes `resolve()` |
+| `pending` | free | Everything waiting for review, across every project |
 | `scheduler run-due` | **$** | Runs every AI feature that's due right now, once, and exits |
 | `scheduler serve [--interval-minutes <n>]` | **$** | Loops forever, re-checking every AI feature's schedule |
 | `ui [--host <addr>] [--port <n>]` | free | Launches the local dashboard at `http://127.0.0.1:5000` |
@@ -270,27 +274,70 @@ you don't have to know the URL scheme by heart.
 
 ---
 
+## API keys — asked for in the interface, and actually used where they're set
+
+Each marketplace needs its own key. Instead of only hand-editing `.env`, the
+interface asks for it — the connect form has a masked field under each
+platform's checkbox, and `/keys` (also reachable from the CLI) lets you set
+or update one any time, not just when connecting a project:
+
+```bash
+python -m modelcicd.cli set-key --provider groq      # prompts, input hidden
+python -m modelcicd.cli keys                          # which platforms are configured
+```
+
+Either way it's written to the same `.env` a key always lived in — no new
+secret storage, and a key is never displayed back once saved, only whether
+one is set.
+
+**Setting a key is what makes selecting that platform real, not cosmetic.**
+Every candidate is now called through the platform it was actually
+discovered on — a Groq-sourced candidate hits Groq's own endpoint with
+`GROQ_API_KEY`, a Fireworks one hits Fireworks' with `FIREWORKS_API_KEY`,
+OpenRouter candidates work exactly as before. Before this, checking "Groq"
+only changed what showed up while *browsing* the catalogue; the actual bench
+call still always went to OpenRouter regardless. The judge is the one
+exception — it always calls through OpenRouter, regardless of which
+platform a candidate came from, since a use case's `judgeModel` is normally
+pinned as an OpenRouter-style id either way.
+
+---
+
 ## Projects, the wizard, and a live endpoint
 
-A **project** is a connected application — a name, a description, a default
-notify email, a marketplace list (`--providers openrouter,groq,fireworks` —
-default: OpenRouter alone), and optionally the application's own code: a
-local `--repo-path` (must already exist) or a `--repo-url` modelcicd clones
-itself (shallow, read-only — relies entirely on whatever the local git/OS
-credential helper already provides; no credentials handled here). Without
-either, nothing is read from or written to the connected application at all
-— a project exists so several applications' AI features stay grouped, each
-benched and approved on its own. Its AI features live under
-`projects/<slug>/use_cases/`, with their own `state/` and `out/`, exactly
-like the top-level `state/`/`out/` directories already used for an unscoped
-use case.
+A **project** is a connected application — a name, a description, a
+**required** notify email (every AI feature in it defaults to this; a
+project with nowhere for a pending-candidate notification to go just means
+that step silently degrades to a console message nobody's watching, so it's
+asked for up front, in the CLI and the dashboard both), a marketplace list
+(`--providers openrouter,groq,fireworks` — default: OpenRouter alone), and
+optionally the application's own code: a local `--repo-path` (must already
+exist) or a `--repo-url` modelcicd clones itself (shallow, read-only —
+relies entirely on whatever the local git/OS credential helper already
+provides; no credentials handled here). Without either, nothing is read
+from or written to the connected application at all — a project exists so
+several applications' AI features stay grouped, each benched and approved on
+its own. Its AI features live under `projects/<slug>/use_cases/`, with their
+own `state/` and `out/`, exactly like the top-level `state/`/`out/`
+directories already used for an unscoped use case.
 
 ```bash
 python -m modelcicd.cli project create --name "Support Portal" \
+  --notify-email you@example.com \
   --repo-path D:\repos\support-portal \
   --providers openrouter,groq          # optional — enables the features below
 python -m modelcicd.cli wizard --project support-portal
 ```
+
+The dashboard's connect form has the same fields plus one thing the CLI
+doesn't: a **"Browse…" button** next to the repo path that opens your
+computer's own real folder picker instead of making you type a path — this
+works only because the dashboard's server and the browser viewing it are the
+same machine, so the server can pop the dialog and hand back the real
+location. It quietly falls back to a plain typed path if that's not
+available. The repo path and git URL fields are behind a dropdown — pick
+which one applies (or neither, if you're not connecting code yet), only the
+matching field shows.
 
 The wizard — identical from the CLI's interactive prompts and the dashboard's
 "Add an AI feature" form, both going through the same `modelcicd/wizard.py` —
@@ -326,6 +373,16 @@ always still typed in by hand — a scan can identify a prompt, not invent a
 good test case. The same flow exists in the dashboard: a "Scan repo for AI
 features" button on the project page, a results list, "Use this" into the
 same wizard form.
+
+**Read the confidence, don't just read the result.** Every candidate carries
+a `confidence: high|low` — a low-confidence one is flagged distinctly
+("verify before using") rather than presented the same as a clean hit, and a
+scan that finds nothing or only low-confidence candidates points straight at
+`wizard --project <slug>` (no `--from-scan`) as the reliable fallback. This
+matters most exactly where it's weakest: code that builds a prompt
+dynamically or through an agent/tool-calling framework is real code the
+scanner is likely to miss or misread — it reads for a literal call site, not
+that kind of indirection. Don't read a quiet scan as "there's nothing here."
 
 ### A live endpoint, for a real baseline
 
@@ -404,9 +461,88 @@ python -m modelcicd.cli scheduler run-due           # or trigger a single check 
 
 Either way, being due only ever runs the same `catalogue → guardrails →
 sandbox → judge → rank → notify` loop `run` does — landing, at most, a new
-**pending** candidate and an email. Nothing here calls `approve()`. A model
-still only reaches production when a human clicks Approve, however often the
-platform re-checks.
+**pending** candidate. Nothing here calls `approve()`. A model still only
+reaches production when a human clicks Approve, however often the platform
+re-checks.
+
+**A scheduled run only emails you when the pending candidate actually
+changes.** The first time a candidate is found, you're notified once; if
+next week's scheduled run finds the exact same still-unreviewed candidate,
+it does **not** send the same email again — repeating an unread suggestion
+every week is how notifications get ignored. The candidate itself is
+unaffected either way — it stays visible in the dashboard, `status`, and the
+aggregate view below until you act on it.
+
+```bash
+python -m modelcicd.cli pending                        # everything waiting for review, everywhere
+python -m modelcicd.cli reject --use-case-name <name>   # dismiss one — never changes resolve()
+```
+
+`pending` lists every candidate awaiting a decision across every project, so
+a scheduler left running for months doesn't quietly bury suggestions inside
+individual feature pages. `reject` is the other side of `approve` — it
+clears the suggestion **without promoting anything**, and is recorded (not
+silently discarded) so a dismissal is still answerable later. If that exact
+model resurfaces as the best candidate in some future run, you're notified
+about it again — a dismissal isn't permanent silence, it's "not this time."
+The dashboard has the same two actions as buttons on the use case page:
+Approve and Dismiss, each with its own confirmation.
+
+---
+
+## Rate-limit visibility — observed, never guessed
+
+Free-tier models (OpenRouter's especially) hit shared rate limits fast in
+real use. There's no public catalogue of per-model rate limits to check
+that against, so this isn't another guardrail filter — it's evidence,
+gathered the same way the score is: by actually calling the candidate.
+
+```yaml
+usage:
+  callsPerDay: 2000   # optional, per AI feature — the wizard asks for this
+```
+
+If a candidate returns 429 (Too Many Requests) during the bench — even a
+light one, a handful of test cases — that's recorded as its own outcome,
+distinct from a generic failure, and shown on the leaderboard next to your
+usage estimate if you gave one:
+
+```
+-  vendor/free-model   could not be scored — rate limited during this bench
+                        (3 call(s)) — a light test already hit it; your
+                        ~2,000/day estimate is unlikely to be sustainable here
+```
+
+The candidate still appears on the leaderboard either way — this never
+disqualifies anything automatically. It's a warning attached to real
+evidence, for the human who's about to approve something.
+
+---
+
+## Judge noise, not just candidate noise
+
+Every score here comes from ONE judged sample — cheap by design, but that
+means a "tie" between two close candidates could be candidate noise (they're
+genuinely similar) or **judge noise** (the judge itself wasn't consistent
+about it), and a single sample can't tell those apart. Left alone, a tie
+band that only protects against the first kind can make a shaky ranking look
+confident for the wrong reason.
+
+So a `run` deepens on exactly the candidates that made a tie-band shortlist:
+their already-generated answers (no candidate is re-run) get re-scored by
+the judge two more times, and the spread across those looks is shown right
+next to the score:
+
+```
+*  1  vendor/model-b   4.60  (judge spread ±0.70)
+   2  vendor/model-a   4.25
+```
+
+A small spread means the judge agreed with itself; a wide one means this
+"tie" is judge noise, not a real result — worth reading before approving a
+close call. A candidate outside the tie zone was never in question, so it's
+never re-judged — same principle as everywhere else here: deepen on the
+shortlist, never the whole field.
 
 ---
 
@@ -498,11 +634,14 @@ codegen_model = resolve("codegen_assistant",   fallback="claude-sonnet")
 
 ## Configuration
 
-Set these in `.env` (see `.env.example`):
+Set these in `.env` (see `.env.example`) — or use `set-key` / `/keys`, which
+write to this same file:
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `OPENROUTER_API_KEY` | yes, for `run` | Every candidate and the judge are called through OpenRouter |
+| `OPENROUTER_API_KEY` | yes, for `run` | Every OpenRouter-sourced candidate and the judge are called through OpenRouter |
+| `GROQ_API_KEY` | only if a project searches Groq | Groq-sourced candidates are called through Groq directly |
+| `FIREWORKS_API_KEY` | only if a project searches Fireworks | Fireworks-sourced candidates are called through Fireworks directly |
 | `MODELCICD_NOTIFY_EMAIL` | no | Default recipient for pending-candidate emails, if not set per use case |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` / `SMTP_FROM` / `SMTP_STARTTLS` | no | If unset, the CLI prints the approve command instead of emailing it |
 
@@ -515,16 +654,17 @@ committed to your repo, and a config with a key in it is a leaked key.
 
 ```
 modelcicd/
-  catalogue.py       fetch + normalize the model catalogue (free)
+  catalogue.py       fetch + normalize the model catalogue (free); provider_map traces a host to its platform
   guardrails.py      filter candidates by price/context/JSON/modality (free)
   config.py          load and validate a use_case.yaml (incl. endpoint/schedule/codeTarget blocks)
-  client.py          the one place this project calls a CANDIDATE model (JSON-mode, retried)
+  client.py          the one place this project calls a CANDIDATE model — standalone, endpoint/key are parameters
+  secrets.py         the one place this project writes an API key (into .env, nowhere new)
   endpoint_client.py the one place this project calls a use case's OWN live endpoint
-  sandbox.py         run one candidate (or the live endpoint) against a use case's test cases
+  sandbox.py         run one candidate (through ITS OWN platform) or the live endpoint, against the test cases
   judge.py           blind, pinned-judge scoring against the use case's rubric
   bench.py           orchestrates sandbox + judge across all candidates + the endpoint
   rank.py            builds the per-tier leaderboard
-  state.py           what's approved per use case, and its history
+  state.py           what's approved per use case, its history, its pending queue
   resolver.py        resolve(use_case) -> the approved model id (the integration point)
   notify.py          emails a human when a candidate is pending
   project.py         connects an application — a name, an optional repo, its providers, its AI features
@@ -599,3 +739,31 @@ judge never being a candidate, tier ranking, stale-state bugs, and so on).
   existing "unknown is not free" guardrail excludes such models the same
   way it excludes any other unpriced one. No provider gets a hardcoded price
   table that could go stale or wrong.
+- **Rate-limit risk is observed, never fabricated.** There's no public
+  catalogue of per-model rate limits the way there is for price, so this
+  isn't a guardrail — a 429 during the bench is real evidence, recorded as
+  its own outcome and shown next to the use case's own usage estimate. It
+  never disqualifies a candidate automatically; it's context for the human
+  who's about to approve one.
+- **`reject()` is not `approve()`.** It's the only other function allowed to
+  clear `pending`, and it's structurally incapable of touching
+  `approvedModel` — a dismissal is recorded (`state["rejected"]`), never
+  silently discarded, and never promotes anything.
+- **A scheduled run notifies once per candidate, not once per check.**
+  `state.notifiedModel` tracks what you were last emailed about; the same
+  still-pending candidate doesn't re-trigger the email on every scheduled
+  run, only a genuinely different candidate does.
+- **Judge noise gets the same "deepen only the shortlist" treatment as
+  everything else.** Re-scoring is never applied to the whole field — only
+  to candidates that already made a tie-band shortlist, and only against
+  answers already generated, so it costs extra judge calls and zero extra
+  candidate calls.
+- **`client.py` stays standalone; it never learns what a "provider" is.**
+  It's meant to be dropped into another repo on its own, so it can't import
+  `catalogue.py`. Multi-platform routing is `sandbox.py`'s job — it resolves
+  a candidate's endpoint and key env var and passes them in as plain
+  parameters, which default to exactly OpenRouter, exactly as `call_json`
+  always behaved before providers existed.
+- **A key is never displayed back once saved.** `secrets.status()` reports
+  whether one is set, never its value — the connect form and `/keys` show a
+  configured/not-set badge, not the key itself.

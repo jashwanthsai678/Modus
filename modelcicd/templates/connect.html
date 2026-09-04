@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}Connect a project — Model CICD{% endblock %}
+{% block content %}
+<p class="muted"><a class="link" href="{{ url_for('index') }}">&larr; home</a></p>
+<h1>Connect a project</h1>
+<p class="muted">Just a name — nothing is read from the application until you ask it to be
+  (a repo path/URL enables read-only reference and scanning; nothing is written until you
+  approve a model and separately confirm a code patch).</p>
+
+{% if error %}
+<div class="card errors">{{ error }}</div>
+{% endif %}
+
+<div class="card">
+  <form method="post" action="{{ url_for('create_project') }}">
+    <label for="name">Application name</label>
+    <input id="name" name="name" type="text" required placeholder="e.g. Support Portal">
+    <label for="description">Description <span class="hint">(optional)</span></label>
+    <input id="description" name="description" type="text" placeholder="what it does">
+    <label for="notify_email">Notify email <span class="hint">(required — every feature in this project
+      defaults to it for pending-candidate notifications)</span></label>
+    <input id="notify_email" name="notify_email" type="email" required placeholder="you@example.com">
+
+    <label for="repo_source">Application's code <span class="hint">(optional — enables read-only
+      reference/scanning in the wizard and is the target for a code patch after approval)</span></label>
+    <select id="repo_source" name="repo_source">
+      <option value="none" selected>Not connecting code yet</option>
+      <option value="path">A local folder on this machine</option>
+      <option value="url">A git URL (modelcicd clones it, shallow and read-only)</option>
+    </select>
+
+    <div id="repo_path_group" hidden>
+      <label for="repo_path" style="margin-top: 10px;">Repo path</label>
+      <div style="display: flex; gap: 8px;">
+        <input id="repo_path" name="repo_path" type="text" placeholder="D:\repos\my-app" style="flex: 1;">
+        <button type="button" id="browse_btn" class="btn">Browse…</button>
+      </div>
+      <p class="muted" id="browse_error" hidden></p>
+    </div>
+
+    <div id="repo_url_group" hidden>
+      <label for="repo_url" style="margin-top: 10px;">Git URL</label>
+      <input id="repo_url" name="repo_url" type="text" placeholder="https://github.com/acme/my-app.git">
+    </div>
+
+    <label>Marketplaces to search <span class="hint">(default: OpenRouter — each one benched candidates
+      actually get called through needs its own key below, or the run will fail for that platform's
+      candidates)</span></label>
+
+    <div class="checkline">
+      <input id="prov-openrouter" name="providers" type="checkbox" value="openrouter" checked>
+      <label for="prov-openrouter" style="margin:0;">OpenRouter</label>
+      <span class="badge {{ 'approved' if key_status.openrouter else 'none' }}" style="margin-left: 8px;">
+        {{ 'key configured' if key_status.openrouter else 'no key yet' }}</span>
+    </div>
+    <input name="openrouter_key" type="password" placeholder="{{ 'leave blank to keep the current key' if key_status.openrouter else 'OpenRouter API key' }}">
+
+    <div class="checkline" style="margin-top: 14px;">
+      <input id="prov-groq" name="providers" type="checkbox" value="groq">
+      <label for="prov-groq" style="margin:0;">Groq</label>
+      <span class="badge {{ 'approved' if key_status.groq else 'none' }}" style="margin-left: 8px;">
+        {{ 'key configured' if key_status.groq else 'no key yet' }}</span>
+    </div>
+    <input name="groq_key" type="password" placeholder="{{ 'leave blank to keep the current key' if key_status.groq else 'Groq API key' }}">
+
+    <div class="checkline" style="margin-top: 14px;">
+      <input id="prov-fireworks" name="providers" type="checkbox" value="fireworks">
+      <label for="prov-fireworks" style="margin:0;">Fireworks</label>
+      <span class="badge {{ 'approved' if key_status.fireworks else 'none' }}" style="margin-left: 8px;">
+        {{ 'key configured' if key_status.fireworks else 'no key yet' }}</span>
+    </div>
+    <input name="fireworks_key" type="password" placeholder="{{ 'leave blank to keep the current key' if key_status.fireworks else 'Fireworks API key' }}">
+
+    <button type="submit" class="btn btn-primary" style="margin-top: 14px;">Connect</button>
+  </form>
+</div>
+
+<p class="muted">Same thing from the CLI:
+  <code>python -m modelcicd.cli project create --name "My App"</code></p>
+<p class="muted">Keys can also be set or updated any time from
+  <a class="link" href="{{ url_for('keys_form') }}">API keys</a> — a project doesn't
+  need to be created to do that.</p>
+
+<script>
+  // Show only the repo-source field that matches the dropdown — the one
+  // bit of JS in this dashboard, kept to exactly this.
+  const repoSource = document.getElementById('repo_source');
+  const pathGroup = document.getElementById('repo_path_group');
+  const urlGroup = document.getElementById('repo_url_group');
+
+  function updateRepoFields() {
+    pathGroup.hidden = repoSource.value !== 'path';
+    urlGroup.hidden = repoSource.value !== 'url';
+  }
+  repoSource.addEventListener('change', updateRepoFields);
+  updateRepoFields();
+
+  // "Browse…" asks the SERVER (not the browser) to open a real folder
+  // picker — this only works because the dashboard's server and this
+  // browser are the same machine. See the /pick-folder route for why.
+  const browseBtn = document.getElementById('browse_btn');
+  const repoPathInput = document.getElementById('repo_path');
+  const browseError = document.getElementById('browse_error');
+
+  browseBtn.addEventListener('click', async () => {
+    browseBtn.disabled = true;
+    const original = browseBtn.textContent;
+    browseBtn.textContent = 'Waiting for the folder picker…';
+    browseError.hidden = true;
+    try {
+      const res = await fetch('{{ url_for("pick_folder") }}');
+      const data = await res.json();
+      if (data.path) {
+        repoPathInput.value = data.path;
+      } else if (data.error) {
+        browseError.textContent = 'Could not open a folder picker (' + data.error + ') — type the path instead.';
+        browseError.hidden = false;
+      }
+    } catch (err) {
+      browseError.textContent = 'Could not reach the folder picker — type the path instead.';
+      browseError.hidden = false;
+    } finally {
+      browseBtn.disabled = false;
+      browseBtn.textContent = original;
+    }
+  });
+</script>
+{% endblock %}

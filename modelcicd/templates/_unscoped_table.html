@@ -1,0 +1,32 @@
+<h2>Unscoped use cases</h2>
+<p class="muted">Run directly with <code>--use-case &lt;path&gt;</code>, outside of any project.</p>
+<table>
+  <tr><th>Use case</th><th>Approved model</th><th>Score</th><th>Pending</th><th>Runs</th><th>Trend</th></tr>
+  {% for c in legacy_cases %}
+  <tr>
+    <td><a class="link" href="{{ url_for('usecase', name=c.useCase) }}">{{ c.useCase }}</a></td>
+    <td>{{ c.approvedModel or '—' }}</td>
+    <td>{{ c.approvedScore if c.approvedScore is not none else '—' }}</td>
+    <td>
+      {% if c.pending %}
+        <span class="badge pending">{{ c.pending.model }} ({{ c.pending.score }})</span>
+      {% else %}
+        <span class="badge none">none</span>
+      {% endif %}
+    </td>
+    <td>{{ (c.history or [])|length }}</td>
+    <td>
+      {% if c.sparkline %}
+      <svg width="{{ c.sparkline.width }}" height="{{ c.sparkline.height }}" role="img" class="sparkline">
+        <title>best score found per run: {{ c.sparkline.title }}</title>
+        <polyline points="{{ c.sparkline.line }}" fill="none" stroke="#9aa0aa"
+                  stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+        <circle cx="{{ c.sparkline.last_x }}" cy="{{ c.sparkline.last_y }}" r="4" fill="#3987e5" />
+      </svg>
+      {% else %}
+      <span class="muted">not enough runs yet</span>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>

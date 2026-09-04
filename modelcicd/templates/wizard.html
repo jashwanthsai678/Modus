@@ -190,6 +190,18 @@
       to actually fire — this only sets the cadence.</p>
   </div>
 
+  <div class="card">
+    <h2 style="margin-top:0;">Usage estimate <span class="hint">(optional)</span></h2>
+    <label for="estimated_calls_per_day">approximate calls per day</label>
+    <input id="estimated_calls_per_day" name="estimated_calls_per_day" type="number"
+           value="{{ fields.estimated_calls_per_day if fields and fields.estimated_calls_per_day else '' }}"
+           placeholder="e.g. 2000">
+    <p class="muted">Never used to filter or rank candidates — there's no public catalogue
+      of per-model rate limits to check that against. It's only paired with what a bench
+      actually observes: if a candidate returns a 429 (rate limited) even during a light
+      test, that's shown next to this estimate on the leaderboard as a real warning sign.</p>
+  </div>
+
   {% if project.repo_path %}
   <div class="card">
     <h2 style="margin-top:0;">Code target <span class="hint">(optional)</span></h2>

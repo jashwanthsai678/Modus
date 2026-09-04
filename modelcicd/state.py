@@ -29,7 +29,8 @@ def load(use_case: str, root: Optional[Path] = None) -> dict:
     if not p.exists():
         return {"useCase": use_case, "approvedModel": None,
                 "approvedScore": None, "approvedAt": None,
-                "history": [], "pending": None}
+                "history": [], "pending": None,
+                "notifiedModel": None, "rejected": []}
     return json.loads(p.read_text(encoding="utf-8"))
 
 
@@ -96,3 +97,60 @@ def set_min_improvement(use_case: str, value: float, *, root: Optional[Path] = N
     state = load(use_case, root)
     state["minImprovement"] = value
     _save(state, root)
+
+
+def mark_notified(use_case: str, model: str, *, root: Optional[Path] = None) -> None:
+    """Records that this candidate has already been emailed about, so a
+    scheduled run that finds the SAME pending candidate again doesn't send
+    the same email every time it checks — only a genuinely new pending
+    candidate (a different model) notifies again."""
+    state = load(use_case, root)
+    state["notifiedModel"] = model
+    _save(state, root)
+
+
+def reject(use_case: str, *, root: Optional[Path] = None) -> dict:
+    """Dismisses the pending candidate WITHOUT approving it — the only
+    other function, besides `approve`, allowed to clear `pending`, and it
+    never touches `approvedModel`. Recorded, not silently forgotten:
+    appended to `rejected` the same way `history` never discards a past
+    run. Clears `notifiedModel` too, so if this exact model resurfaces as
+    pending again later, it notifies once more rather than staying quiet
+    forever because of a dismissal from months ago."""
+    state = load(use_case, root)
+    pending = state.get("pending")
+    if not pending:
+        raise ValueError(f"nothing pending for {use_case!r} to reject.")
+    state["rejected"] = (state.get("rejected") or [])[-49:] + [
+        {"model": pending["model"], "rejectedAt": datetime.now(timezone.utc).isoformat()}]
+    state["pending"] = None
+    state["notifiedModel"] = None
+    _save(state, root)
+    return load(use_case, root)
+
+
+def all_pending(*, projects_root=None, unscoped_root: Optional[Path] = None) -> list:
+    """Every pending candidate across every project, plus unscoped use
+    cases — the one place both the CLI's `pending` command and the
+    dashboard's `/pending` page read from, so they can never disagree about
+    what's waiting for review."""
+    from . import project as project_module
+
+    def _pending_in(state_dir: Path, project_slug: Optional[str]) -> list:
+        if not state_dir.exists():
+            return []
+        found = []
+        for p in sorted(state_dir.glob("*.json")):
+            try:
+                st = json.loads(p.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            if st.get("pending"):
+                found.append({"project": project_slug, "useCase": st["useCase"],
+                             "pending": st["pending"]})
+        return found
+
+    results = _pending_in(Path(unscoped_root or DEFAULT_DIR), None)
+    for proj in project_module.list_all(projects_root):
+        results += _pending_in(project_module.state_dir(proj.slug, projects_root), proj.slug)
+    return results

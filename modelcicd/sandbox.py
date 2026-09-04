@@ -16,6 +16,7 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Optional
 
+from . import catalogue as catalogue_module
 from . import client as client_module
 from . import endpoint_client as endpoint_client_module
 from .config import TestCase, UseCase
@@ -23,14 +24,33 @@ from .config import TestCase, UseCase
 ENDPOINT_LABEL = "current (your endpoint)"
 
 
-async def run_one(model_id: str, uc: UseCase, tc: TestCase) -> dict:
-    """One candidate, one test case, one call."""
+def _provider_spec(provider: str) -> dict:
+    """Falls back to OpenRouter for an unrecognized provider name rather
+    than raising — a stale/unknown provider tag on an old candidate id
+    should degrade to the safe default, not break the whole bench."""
+    return catalogue_module.PROVIDERS.get(provider) or catalogue_module.PROVIDERS["openrouter"]
+
+
+async def run_one(model_id: str, uc: UseCase, tc: TestCase, *,
+                  provider: str = "openrouter") -> dict:
+    """One candidate, one test case, one call — through WHICHEVER platform
+    this candidate actually came from, not always OpenRouter."""
+    spec = _provider_spec(provider)
     started = datetime.now(timezone.utc)
     try:
         output = await client_module.call_json(
             tc.input, model=model_id, label=f"sandbox[{model_id}:{tc.id}]",
+            base_url=spec["chat_url"], api_key_env=spec["key_env"],
             system=uc.system_prompt, required=(),
             temperature=0.4, max_tokens=uc.max_tokens)
+    except client_module.RateLimitedError as exc:
+        # A REAL, OBSERVED signal — this candidate hit a rate limit during
+        # even a light bench. Recorded distinctly from a generic failure so
+        # the leaderboard can say so, next to the use case's own usage
+        # estimate if one was given.
+        return {"testCase": tc.id, "status": "rate_limited",
+                "seconds": (datetime.now(timezone.utc) - started).total_seconds(),
+                "error": str(exc)[:300]}
     except Exception as exc:                        # noqa: BLE001
         return {"testCase": tc.id, "status": "failed",
                 "seconds": (datetime.now(timezone.utc) - started).total_seconds(),
@@ -40,7 +60,8 @@ async def run_one(model_id: str, uc: UseCase, tc: TestCase) -> dict:
             "output": output}
 
 
-async def run_candidate(model_id: str, uc: UseCase) -> dict:
+async def run_candidate(model_id: str, uc: UseCase, *,
+                        provider: str = "openrouter") -> dict:
     """Every test case for one candidate, in sequence.
 
     Sequential, not concurrent, per candidate — this is a screening tool run
@@ -51,10 +72,12 @@ async def run_candidate(model_id: str, uc: UseCase) -> dict:
     """
     results = []
     for tc in uc.test_cases:
-        results.append(await run_one(model_id, uc, tc))
-    ok = [r for r in results if r["status"] == "ok"]
-    return {"model": model_id, "results": results,
-            "counts": {"ok": len(ok), "failed": len(results) - len(ok)}}
+        results.append(await run_one(model_id, uc, tc, provider=provider))
+    counts = {"ok": 0, "failed": 0, "rateLimited": 0}
+    for r in results:
+        counts["ok" if r["status"] == "ok" else
+               "rateLimited" if r["status"] == "rate_limited" else "failed"] += 1
+    return {"model": model_id, "results": results, "counts": counts}
 
 
 async def run_endpoint_one(uc: UseCase, tc: TestCase) -> dict:

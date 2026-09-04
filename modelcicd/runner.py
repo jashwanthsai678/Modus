@@ -47,13 +47,28 @@ def select_candidates(uc: UseCase, cat: dict, *, providers: Optional[list] = Non
 async def execute(uc: UseCase, cat: dict, candidates: list, *,
                   state_root: Optional[Path] = None,
                   out_dir: Optional[Path] = None) -> dict:
-    """Runs the bench, ranks it, saves the run file, records state, and
-    notifies if a candidate is pending. Returns everything a caller needs to
-    report what happened, without needing to redo any of it."""
-    result = await bench_module.run(candidates, uc)
+    """Runs the bench, ranks it, deepens judging on just the tie zone,
+    saves the run file, records state, and notifies if a candidate is
+    pending AND hasn't already been notified about. Returns everything a
+    caller needs to report what happened, without needing to redo any of
+    it."""
+    result = await bench_module.run(
+        candidates, uc, provider_by_model=catalogue_module.provider_map(cat))
 
     state = state_module.load(uc.name, state_root)
-    board = rank_module.build(result, cat, approved_model=state.get("approvedModel"))
+    board = rank_module.build(result, cat, approved_model=state.get("approvedModel"),
+                              estimated_calls_per_day=uc.estimated_calls_per_day)
+
+    # A close call is exactly where judge noise matters most — re-score just
+    # the candidates that made a tie-band shortlist, against their SAME
+    # already-generated outputs (no extra candidate calls), and show the
+    # spread. Everyone outside the tie zone was never in question.
+    tie_zone = sorted({m for band in (board.get("shortlists") or {}).values() for m in band})
+    if tie_zone:
+        spread_map = await bench_module.rejudge_for_spread(
+            result, uc, result.get("judge") or uc.judge_model, tie_zone)
+        rank_module.attach_judge_spread(board, spread_map)
+
     text = rank_module.report(board)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -67,7 +82,15 @@ async def execute(uc: UseCase, cat: dict, candidates: list, *,
     new_state = state_module.record_run(uc.name, board, root=state_root)
     notified = False
     if new_state.get("pending"):
-        notified = notify_module.send_pending(uc.name, new_state, text, to=uc.notify.email)
+        pending_model = new_state["pending"]["model"]
+        # Only notify when the pending candidate actually CHANGED since the
+        # last email — otherwise a scheduled run re-finding the same
+        # unreviewed candidate would re-send the same email every time it
+        # checks, forever, until someone acts on it.
+        if pending_model != new_state.get("notifiedModel"):
+            notified = notify_module.send_pending(uc.name, new_state, text, to=uc.notify.email)
+            if notified:
+                state_module.mark_notified(uc.name, pending_model, root=state_root)
 
     return {"stamp": stamp, "board": board, "state": new_state, "report": text,
             "out_path": out_path, "notified": notified}

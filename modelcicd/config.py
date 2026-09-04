@@ -146,6 +146,7 @@ class UseCase:
     endpoint: Optional[Endpoint] = None       # live baseline to compare candidates against
     schedule_interval_days: Optional[int] = None  # re-run automatically on this cadence
     code_target: Optional[CodeTarget] = None  # where to (optionally) patch an approved model back to
+    estimated_calls_per_day: Optional[int] = None  # rough usage, paired with any observed rate limiting
     path: Optional[Path] = None      # where this was loaded from, for error messages
 
 
@@ -227,6 +228,9 @@ def load(path) -> UseCase:
     if ct.get("file"):
         code_target = CodeTarget(file=ct["file"], current_model=ct.get("currentModel"))
 
+    usage = raw.get("usage") or {}
+    calls_per_day = usage.get("callsPerDay")
+
     return UseCase(
         name=raw["useCase"], description=raw.get("description", ""),
         system_prompt=raw["systemPrompt"], test_cases=test_cases,
@@ -234,7 +238,8 @@ def load(path) -> UseCase:
         judge_model=judge, max_tokens=int(raw.get("maxTokens", 1200)),
         endpoint=endpoint,
         schedule_interval_days=int(interval) if interval else None,
-        code_target=code_target, path=p)
+        code_target=code_target,
+        estimated_calls_per_day=int(calls_per_day) if calls_per_day else None, path=p)
 
 
 def describe(uc: UseCase) -> str:
@@ -253,4 +258,6 @@ def describe(uc: UseCase) -> str:
         f"  schedule      every {uc.schedule_interval_days} day(s)"
         if uc.schedule_interval_days else "",
         f"  code target   {uc.code_target.file}" if uc.code_target else "",
+        f"  usage est.    ~{uc.estimated_calls_per_day:,} calls/day"
+        if uc.estimated_calls_per_day else "",
     ]).replace("\n\n", "\n")

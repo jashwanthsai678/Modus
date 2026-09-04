@@ -10,8 +10,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from modelcicd import (catalogue, code_patch, code_scan, config, endpoint_client,  # noqa: E402
-                       guardrails, judge, project, rank, runner, scheduler, state, wizard)
+from modelcicd import (catalogue, client, code_patch, code_scan, config,  # noqa: E402
+                       endpoint_client, guardrails, judge, project, rank, runner,
+                       sandbox, scheduler, secrets, state, wizard)
 
 FAILURES: list = []
 
@@ -61,6 +62,23 @@ def test_groq_rows_normalize_without_fabricating_price() -> None:
 def test_fireworks_rows_skip_entries_without_an_id() -> None:
     rows = catalogue._rows_openai_compatible("fireworks", {"data": [{"context_length": 4096}]})
     check("no id, no row", rows == [], f"{rows}")
+
+
+def test_provider_map_traces_each_host_to_its_platform() -> None:
+    cat = {"models": {
+        "llama": {"hosts": [{"id": "vendor/llama-a", "provider": "groq"},
+                            {"id": "vendor/llama-b", "provider": "openrouter"}]},
+        "mixtral": {"hosts": [{"id": "vendor/mixtral-a", "provider": "fireworks"}]},
+    }}
+    pm = catalogue.provider_map(cat)
+    check("groq host traced", pm["vendor/llama-a"] == "groq", f"{pm}")
+    check("openrouter host traced", pm["vendor/llama-b"] == "openrouter", f"{pm}")
+    check("fireworks host traced", pm["vendor/mixtral-a"] == "fireworks", f"{pm}")
+
+
+def test_provider_map_handles_an_empty_catalogue() -> None:
+    check("empty in, empty out", catalogue.provider_map({}) == {})
+    check("None in, empty out", catalogue.provider_map(None) == {})
 
 
 def test_distinct_models_never_merge() -> None:
@@ -203,6 +221,197 @@ def test_report_is_ascii() -> None:
         check("encodes on cp1252", False, str(exc))
 
 
+def _rate_limited_entry(model_id="x") -> dict:
+    return {"model": model_id, "mean": None, "wouldShipRate": None,
+            "counts": {"ok": 0, "rate_limited": 1},
+            "testCases": [{"status": "rate_limited", "error": "rate limited (429)"}]}
+
+
+def test_rate_limited_row_is_flagged_without_a_usage_estimate() -> None:
+    board = rank.build(_bench(_rate_limited_entry()), None)
+    row = board["tiers"]["unknown"][0]
+    check("flagged", row["rateLimited"] is True)
+    check("note present, no estimate mentioned",
+         row["rateLimitNote"] is not None and "estimate" not in row["rateLimitNote"])
+
+
+def test_rate_limited_row_mentions_the_usage_estimate_when_given() -> None:
+    board = rank.build(_bench(_rate_limited_entry()), None, estimated_calls_per_day=2000)
+    row = board["tiers"]["unknown"][0]
+    check("estimate mentioned", "2,000" in row["rateLimitNote"], row["rateLimitNote"])
+
+
+def test_a_normal_failure_is_not_flagged_as_rate_limited() -> None:
+    board = rank.build(_bench({"model": "x", "mean": None, "wouldShipRate": None,
+                              "counts": {"ok": 0, "generation_failed": 1},
+                              "testCases": [{"error": "[sandbox] 403 Forbidden"}]}),
+                       None)
+    row = board["tiers"]["unknown"][0]
+    check("not flagged", row["rateLimited"] is False)
+    check("no note", row["rateLimitNote"] is None)
+
+
+# ── client: a 429 is a distinct, real signal — never a guessed limit ────────
+
+def test_rate_limit_detected_on_429() -> None:
+    import httpx
+    resp = httpx.Response(429, request=httpx.Request("POST", "http://example.com"))
+    try:
+        client._raise_if_rate_limited(resp)
+        check("raised", False)
+    except client.RateLimitedError:
+        check("raised", True)
+
+
+def test_rate_limit_not_raised_on_ok_or_server_error() -> None:
+    import httpx
+    for code in (200, 500):
+        resp = httpx.Response(code, request=httpx.Request("POST", "http://example.com"))
+        try:
+            client._raise_if_rate_limited(resp)
+            check(f"no raise on {code}", True)
+        except client.RateLimitedError:
+            check(f"no raise on {code}", False)
+
+
+def test_sandbox_maps_rate_limited_error_to_its_own_status() -> None:
+    import asyncio
+
+    async def fake_call_json(*args, **kwargs):
+        raise client.RateLimitedError("rate limited (429)")
+
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+    original = sandbox.client_module.call_json
+    sandbox.client_module.call_json = fake_call_json
+    try:
+        result = asyncio.run(sandbox.run_one("vendor/model", uc, uc.test_cases[0]))
+    finally:
+        sandbox.client_module.call_json = original
+    check("status is rate_limited", result["status"] == "rate_limited", f"{result}")
+
+
+def test_sandbox_calls_through_the_candidates_own_platform() -> None:
+    """A Groq candidate must actually be called against Groq's endpoint with
+    Groq's key env var — not silently sent to OpenRouter regardless of which
+    platform it was discovered on."""
+    import asyncio
+
+    seen = {}
+
+    async def fake_call_json(*args, **kwargs):
+        seen["base_url"] = kwargs.get("base_url")
+        seen["api_key_env"] = kwargs.get("api_key_env")
+        return {"reply": "ok"}
+
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+    original = sandbox.client_module.call_json
+    sandbox.client_module.call_json = fake_call_json
+    try:
+        asyncio.run(sandbox.run_one("vendor/model", uc, uc.test_cases[0], provider="groq"))
+    finally:
+        sandbox.client_module.call_json = original
+    check("used groq's chat endpoint", seen.get("base_url") == catalogue.PROVIDERS["groq"]["chat_url"],
+         f"{seen}")
+    check("used groq's key env var", seen.get("api_key_env") == "GROQ_API_KEY", f"{seen}")
+
+
+def test_sandbox_defaults_to_openrouter_for_an_unrecognized_provider() -> None:
+    import asyncio
+
+    seen = {}
+
+    async def fake_call_json(*args, **kwargs):
+        seen["base_url"] = kwargs.get("base_url")
+        return {"reply": "ok"}
+
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+    original = sandbox.client_module.call_json
+    sandbox.client_module.call_json = fake_call_json
+    try:
+        asyncio.run(sandbox.run_one("vendor/model", uc, uc.test_cases[0], provider="nonsense"))
+    finally:
+        sandbox.client_module.call_json = original
+    check("falls back to openrouter", seen.get("base_url") == catalogue.PROVIDERS["openrouter"]["chat_url"],
+         f"{seen}")
+
+
+# ── client: an unset key names the RIGHT env var, whichever platform it is ──
+
+def test_call_json_missing_key_names_the_given_env_var() -> None:
+    import asyncio
+    import os
+
+    var = "MODELCICD_TEST_MISSING_KEY"
+    os.environ.pop(var, None)
+    try:
+        asyncio.run(client.call_json("hi", model="x", label="t", api_key_env=var))
+        check("raised", False)
+    except RuntimeError as exc:
+        check("names the right env var", var in str(exc), str(exc))
+
+
+# ── secrets: the one place this project writes an API key ───────────────────
+
+def test_set_key_preserves_other_lines_and_updates_environ() -> None:
+    import os
+
+    with tempfile.TemporaryDirectory() as d:
+        env_path = Path(d) / ".env"
+        env_path.write_text("SOME_OTHER_VAR=keep-me\nOPENROUTER_API_KEY=old\n", encoding="utf-8")
+        secrets.set_key("groq", "new-groq-key", env_path=env_path)
+        text = env_path.read_text(encoding="utf-8")
+        check("other line preserved", "SOME_OTHER_VAR=keep-me" in text, text)
+        check("existing key untouched", "OPENROUTER_API_KEY=old" in text, text)
+        check("new key appended", "GROQ_API_KEY=new-groq-key" in text, text)
+        check("environ updated immediately", os.environ.get("GROQ_API_KEY") == "new-groq-key")
+
+
+def test_set_key_replaces_an_existing_line_rather_than_duplicating() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        env_path = Path(d) / ".env"
+        env_path.write_text("GROQ_API_KEY=old-value\n", encoding="utf-8")
+        secrets.set_key("groq", "new-value", env_path=env_path)
+        text = env_path.read_text(encoding="utf-8")
+        check("only one line for the key", text.count("GROQ_API_KEY=") == 1, text)
+        check("value updated", "GROQ_API_KEY=new-value" in text, text)
+
+
+def test_set_key_rejects_an_unknown_provider() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            secrets.set_key("not-a-real-provider", "x", env_path=Path(d) / ".env")
+            check("refused", False)
+        except ValueError:
+            check("refused", True)
+
+
+def test_status_reflects_the_live_environment() -> None:
+    import os
+
+    var = "FIREWORKS_API_KEY"
+    had = os.environ.pop(var, None)
+    try:
+        check("not set", secrets.status()["fireworks"] is False)
+        os.environ[var] = "some-key"
+        check("now set", secrets.status()["fireworks"] is True)
+    finally:
+        if had is not None:
+            os.environ[var] = had
+        else:
+            os.environ.pop(var, None)
+
+
+# ── usage estimate: round-trips, never used to filter or rank ───────────────
+
+def test_usage_estimate_round_trips_through_wizard_and_config() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "demo_feature.yaml"
+        fields = _wizard_fields(estimated_calls_per_day=2000)
+        p.write_text(wizard.to_yaml(fields), encoding="utf-8")
+        uc = config.load(p)
+        check("estimate loaded", uc.estimated_calls_per_day == 2000)
+
+
 # ── state / resolver: approval is the only thing that promotes ─────────────
 
 def test_resolve_fails_loud_with_no_fallback() -> None:
@@ -259,12 +468,155 @@ def test_min_improvement_threshold_suppresses_noise() -> None:
               f"{new_state.get('pending')}")
 
 
+# ── state: dismissing is not approving, and the pending queue is real ───────
+
+def test_reject_clears_pending_without_touching_approved() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        st = state.load("uc3", root=root)
+        st["approvedModel"] = "old-model"
+        st["pending"] = {"model": "candidate-x", "score": 4.5, "foundAt": "t"}
+        st["notifiedModel"] = "candidate-x"
+        state._save(st, root=root)
+
+        new_state = state.reject("uc3", root=root)
+        check("pending cleared", new_state.get("pending") is None)
+        check("notifiedModel cleared", new_state.get("notifiedModel") is None)
+        check("approved untouched", new_state.get("approvedModel") == "old-model")
+        check("recorded, not forgotten",
+             new_state.get("rejected") and new_state["rejected"][-1]["model"] == "candidate-x")
+
+
+def test_reject_with_nothing_pending_is_refused() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            state.reject("uc4", root=Path(d))
+            check("refused", False)
+        except ValueError:
+            check("refused", True)
+
+
+def test_all_pending_finds_items_across_projects_and_unscoped() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        projects_root = root / "projects"
+        unscoped_root = root / "state"
+
+        proj = project.create("Demo App", notify_email="demo@example.com", root=projects_root)
+        st = state.load("scoped_uc", project.state_dir(proj.slug, projects_root))
+        st["pending"] = {"model": "a", "score": 4.0, "foundAt": "t"}
+        state._save(st, project.state_dir(proj.slug, projects_root))
+
+        st2 = state.load("unscoped_uc", unscoped_root)
+        st2["pending"] = {"model": "b", "score": 4.1, "foundAt": "t"}
+        state._save(st2, unscoped_root)
+
+        found = state.all_pending(projects_root=projects_root, unscoped_root=unscoped_root)
+        names = {(f["project"], f["useCase"]) for f in found}
+        check("scoped found", ("demo-app", "scoped_uc") in names, f"{names}")
+        check("unscoped found", (None, "unscoped_uc") in names, f"{names}")
+
+
+def _fake_bench_result(model="vendor/winner", score=4.5) -> dict:
+    return {"schema": 1, "ranAt": "2026-01-01T00:00:00+00:00", "useCase": "prep_material_writer",
+            "judge": "openai/gpt-4o", "testCases": 1, "candidates": 1,
+            "results": [{"model": model, "mean": score, "wouldShipRate": 1.0,
+                        "counts": {"ok": 1, "generation_failed": 0, "judge_failed": 0,
+                                  "rate_limited": 0},
+                        "testCases": [{"testCase": "t1", "status": "ok",
+                                      "output": "hi", "weighted": score}]}]}
+
+
+def test_runner_does_not_renotify_for_an_unchanged_pending_candidate() -> None:
+    import asyncio
+
+    async def fake_bench_run(candidates, uc, *, judge_model=None, provider_by_model=None):
+        return _fake_bench_result()
+
+    async def fake_rejudge(*a, **k):
+        return {}
+
+    sent = []
+
+    def fake_send_pending(use_case, state_dict, text, to=None):
+        sent.append(use_case)
+        return True
+
+    original_run = runner.bench_module.run
+    original_rejudge = runner.bench_module.rejudge_for_spread
+    original_notify = runner.notify_module.send_pending
+    runner.bench_module.run = fake_bench_run
+    runner.bench_module.rejudge_for_spread = fake_rejudge
+    runner.notify_module.send_pending = fake_send_pending
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+            asyncio.run(runner.execute(uc, {}, ["vendor/winner"], state_root=root, out_dir=root))
+            asyncio.run(runner.execute(uc, {}, ["vendor/winner"], state_root=root, out_dir=root))
+    finally:
+        runner.bench_module.run = original_run
+        runner.bench_module.rejudge_for_spread = original_rejudge
+        runner.notify_module.send_pending = original_notify
+    check("notified exactly once for the same repeated candidate", sent == ["prep_material_writer"],
+         f"{sent}")
+
+
+# ── judge: repeated scoring surfaces JUDGE noise, not just candidate noise ──
+
+def test_judge_score_repeated_reports_the_spread() -> None:
+    import asyncio
+
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+    tc = uc.test_cases[0]
+    criteria_ids = [c.id for c in (tc.rubric or uc.rubric)]
+    responses = iter([
+        {"scores": {cid: 5 for cid in criteria_ids}, "reasons": {}, "wouldShip": True},
+        {"scores": {cid: 3 for cid in criteria_ids}, "reasons": {}, "wouldShip": True},
+        {"scores": {cid: 4 for cid in criteria_ids}, "reasons": {}, "wouldShip": True},
+    ])
+
+    async def fake_call_json(*a, **k):
+        return next(responses)
+
+    original = judge.client_module.call_json
+    judge.client_module.call_json = fake_call_json
+    try:
+        result = asyncio.run(judge.score_repeated("vendor/x", "openai/gpt-4o", uc, tc,
+                                                   "some output", repeats=3))
+    finally:
+        judge.client_module.call_json = original
+    check("spread is max-min across repeats", result["spread"] == 2.0, f"{result}")
+    check("weighted is the median", result["weighted"] == 4.0, f"{result}")
+
+
+def test_rank_attach_judge_spread_only_touches_named_rows() -> None:
+    board = rank.build(_bench(_row("a", 4.4), _row("b", 4.3)), None)
+    rank.attach_judge_spread(board, {"a": 0.3})
+    row_a = next(r for r in board["tiers"]["unknown"] if r["model"] == "a")
+    row_b = next(r for r in board["tiers"]["unknown"] if r["model"] == "b")
+    check("named row updated", row_a["judgeSpread"] == 0.3)
+    check("unnamed row stays None", row_b["judgeSpread"] is None)
+
+
+# ── code_scan: confidence is a real, actionable signal ───────────────────────
+
+def test_scan_summary_counts_by_confidence() -> None:
+    results = [{"confidence": "high"}, {"confidence": "high"}, {"confidence": "low"},
+              {"confidence": None}]
+    s = code_scan.summary(results)
+    check("high count", s["high"] == 2, f"{s}")
+    check("low count (incl. missing)", s["low"] == 2, f"{s}")
+    check("total", s["total"] == 4)
+
+
 # ── project: a lightweight registration, round-tripped ──────────────────────
 
 def test_project_create_load_list_round_trip() -> None:
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
-        proj = project.create("Demo App", description="a demo", root=root)
+        proj = project.create("Demo App", description="a demo",
+                              notify_email="demo@example.com", root=root)
         check("slugified", proj.slug == "demo-app", proj.slug)
         loaded = project.load("demo-app", root=root)
         check("name round-trips", loaded.name == "Demo App")
@@ -278,19 +630,30 @@ def test_project_create_load_list_round_trip() -> None:
 def test_project_duplicate_slug_is_refused() -> None:
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
-        project.create("Demo App", root=root)
+        project.create("Demo App", notify_email="demo@example.com", root=root)
         try:
-            project.create("Demo App", root=root)
+            project.create("Demo App", notify_email="demo@example.com", root=root)
             check("refused", False)
         except ValueError:
             check("refused", True)
+
+
+def test_project_requires_a_notify_email() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            project.create("Demo App", root=Path(d))
+            check("refused", False)
+        except ValueError as exc:
+            check("refused", True)
+            check("names why", "notify" in str(exc).lower(), str(exc))
 
 
 def test_project_rejects_a_repo_path_that_does_not_exist() -> None:
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         try:
-            project.create("Demo App", repo_path=str(root / "nowhere"), root=root)
+            project.create("Demo App", notify_email="demo@example.com",
+                          repo_path=str(root / "nowhere"), root=root)
             check("refused", False)
         except ValueError:
             check("refused", True)
@@ -300,7 +663,8 @@ def test_project_rejects_both_repo_path_and_repo_url() -> None:
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         try:
-            project.create("X", repo_path=".", repo_url="https://example.com/x.git", root=root)
+            project.create("X", notify_email="demo@example.com", repo_path=".",
+                          repo_url="https://example.com/x.git", root=root)
             check("refused", False)
         except ValueError:
             check("refused", True)
@@ -309,7 +673,7 @@ def test_project_rejects_both_repo_path_and_repo_url() -> None:
 def test_project_providers_default_to_openrouter() -> None:
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
-        proj = project.create("Demo App", root=root)
+        proj = project.create("Demo App", notify_email="demo@example.com", root=root)
         check("default provider", proj.providers == ["openrouter"], f"{proj.providers}")
         loaded = project.load("demo-app", root=root)
         check("providers round-trip", loaded.providers == ["openrouter"])
@@ -321,7 +685,7 @@ def test_read_repo_file_refuses_a_path_outside_the_repo() -> None:
         repo = root / "repo"
         repo.mkdir()
         (repo / "app.py").write_text("model = 'gpt-4o-mini'\n", encoding="utf-8")
-        project.create("Demo App", repo_path=str(repo), root=root)
+        project.create("Demo App", notify_email="demo@example.com", repo_path=str(repo), root=root)
         check("reads a real file",
               "gpt-4o-mini" in project.read_repo_file("demo-app", "app.py", root=root))
         try:

@@ -17,13 +17,26 @@ NOISE = 0.25
 TIER_ORDER = ("free", "paid-low", "paid-mid", "paid-high", "unknown")
 
 
+def _rate_limit_note(rate_limited_count: int, estimated_calls_per_day: Optional[int]
+                     ) -> Optional[str]:
+    if not rate_limited_count:
+        return None
+    if estimated_calls_per_day:
+        return (f"rate limited during this bench ({rate_limited_count} call(s)) — "
+               f"a light test already hit it; your ~{estimated_calls_per_day:,}/day "
+               f"estimate is unlikely to be sustainable here")
+    return f"rate limited during this bench ({rate_limited_count} call(s))"
+
+
 def build(bench_result: dict, catalogue: Optional[dict] = None,
-         approved_model: Optional[str] = None) -> dict:
+         approved_model: Optional[str] = None, *,
+         estimated_calls_per_day: Optional[int] = None) -> dict:
     models = (catalogue or {}).get("models") or {}
     rows = []
     for entry in bench_result.get("results") or []:
         model_id = entry["model"]
         meta = models.get(catalogue_module.key(model_id)) or {}
+        rate_limited_count = (entry.get("counts") or {}).get("rate_limited", 0)
         rows.append({
             "model": model_id,
             "tier": guardrails_module.tier(meta) if meta else "unknown",
@@ -42,6 +55,18 @@ def build(bench_result: dict, catalogue: Optional[dict] = None,
                           if tc.get("error")), None),
             "isApproved": approved_model is not None
                          and catalogue_module.key(model_id) == catalogue_module.key(approved_model),
+            # A REAL, OBSERVED signal, never a guessed per-model limit: this
+            # candidate returned 429 during the bench itself. Paired with the
+            # use case's own usage estimate, if it gave one, so a human sees
+            # both the evidence and the context together.
+            "rateLimited": rate_limited_count > 0,
+            "rateLimitNote": _rate_limit_note(rate_limited_count, estimated_calls_per_day),
+            # Filled in later by `attach_judge_spread`, only for candidates
+            # that made a tie-band shortlist — how much the JUDGE's own
+            # score moved across repeated looks at the SAME answer. None
+            # means "not re-checked" (outside the tie zone), not "zero
+            # noise" — don't read a bare None as a clean bill of health.
+            "judgeSpread": None,
         })
 
     tiers: dict = {}
@@ -67,6 +92,18 @@ def build(bench_result: dict, catalogue: Optional[dict] = None,
     }
 
 
+def attach_judge_spread(board: dict, spread_by_model: dict) -> None:
+    """Writes `judgeSpread` onto whichever rows are in `spread_by_model` —
+    mutates `board` in place, called after `build()` once a caller has
+    re-judged the tie zone (see `bench.rejudge_for_spread`). A model not in
+    `spread_by_model` keeps `judgeSpread: None` — never re-checked, not
+    assumed noise-free."""
+    for band in board.get("tiers", {}).values():
+        for row in band:
+            if row["model"] in spread_by_model:
+                row["judgeSpread"] = spread_by_model[row["model"]]
+
+
 def best_overall(board: dict) -> Optional[dict]:
     """The single best-scoring candidate across every tier, for the
     approved-vs-candidate comparison the notifier needs. Ties within a tier are
@@ -90,15 +127,19 @@ def report(board: dict) -> str:
         lines.append(f"-- {name.upper()} " + "-" * (56 - len(name)))
         for i, r in enumerate(band, start=1):
             if r["score"] is None:
-                reason = (r.get("error") or "").split("] ", 1)[-1][:90]
+                if r.get("rateLimited"):
+                    reason = r.get("rateLimitNote")
+                else:
+                    reason = (r.get("error") or "").split("] ", 1)[-1][:90]
                 lines.append(f"   {'-':>3}  {r['model']:<44} "
                              f"could not be scored — {reason or r['counts']}")
                 continue
             flag = "*" if r["model"] in (board["shortlists"].get(name) or []) else " "
             approved = "  <- currently approved" if r["isApproved"] else ""
             price = f"${r['price_out']:.2f}/M" if r.get("price_out") is not None else "  -  "
+            spread = f"  (judge spread ±{r['judgeSpread']:.2f})" if r.get("judgeSpread") is not None else ""
             lines.append(f"  {flag}{i:>3}  {r['model']:<44} {r['score']:.2f}  "
-                         f"{price:>9}  ship={r.get('wouldShipRate', 0):.0%}{approved}")
+                         f"{price:>9}  ship={r.get('wouldShipRate', 0):.0%}{approved}{spread}")
         lines.append("")
     lines += [f"  * = within {board.get('noise')} of this tier's best — a TIE "
              f"at one sample per test case, not a ranking.",

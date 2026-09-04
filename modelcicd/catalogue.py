@@ -36,10 +36,13 @@ from typing import Optional
 
 PROVIDERS = {
     "openrouter": {"url": "https://openrouter.ai/api/v1/models",
+                   "chat_url": "https://openrouter.ai/api/v1/chat/completions",
                    "key_env": "OPENROUTER_API_KEY", "needs_key": False},
     "groq": {"url": "https://api.groq.com/openai/v1/models",
+             "chat_url": "https://api.groq.com/openai/v1/chat/completions",
              "key_env": "GROQ_API_KEY", "needs_key": True},
     "fireworks": {"url": "https://api.fireworks.ai/inference/v1/models",
+                  "chat_url": "https://api.fireworks.ai/inference/v1/chat/completions",
                   "key_env": "FIREWORKS_API_KEY", "needs_key": True},
 }
 
@@ -185,6 +188,16 @@ def cheapest_host_id(model: dict) -> Optional[str]:
     hosts = [h for h in model.get("hosts") or [] if h.get("price_out") is not None]
     hosts.sort(key=lambda h: h["price_out"])
     return hosts[0]["id"] if hosts else None
+
+
+def provider_map(cat: dict) -> dict:
+    """Every host id in a catalogue, mapped to the provider it came from —
+    built once from the catalogue already in memory, so the sandbox can look
+    up which endpoint/key a candidate needs without re-fetching anything."""
+    models = (cat or {}).get("models") or {}
+    return {h["id"]: h.get("provider", "openrouter")
+           for m in models.values()
+           for h in m.get("hosts") or [] if h.get("id")}
 
 
 def save(catalogue: dict, path) -> None:

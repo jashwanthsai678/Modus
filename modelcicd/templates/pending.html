@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Pending review — Model CICD{% endblock %}
+{% block content %}
+<p class="muted"><a class="link" href="{{ url_for('index') }}">&larr; home</a></p>
+<h1>Pending review</h1>
+<p class="muted">Every candidate waiting on a decision, across every project. Approving
+  changes what <code>resolve()</code> returns; dismissing only clears this list.</p>
+
+{% if not items %}
+<p class="muted">Nothing pending anywhere — every project is caught up.</p>
+{% else %}
+<table>
+  <tr><th>Project</th><th>AI feature</th><th>Candidate</th><th>Score</th><th>Found</th><th></th></tr>
+  {% for item in items %}
+  <tr>
+    <td>{{ item.project or '(unscoped)' }}</td>
+    <td><a class="link" href="{{ scoped_url('usecase', project=item.project, name=item.useCase) }}">{{ item.useCase }}</a></td>
+    <td>{{ item.pending.model }}</td>
+    <td>{{ item.pending.score }}</td>
+    <td class="muted">{{ item.pending.foundAt[:10] if item.pending.foundAt else '—' }}</td>
+    <td><a class="link" href="{{ scoped_url('usecase', project=item.project, name=item.useCase) }}">review &rarr;</a></td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+{% endblock %}

@@ -95,8 +95,15 @@
   </style>
 </head>
 <body>
-  <header><a href="{{ url_for('index') }}">Model CICD</a>
-    <span class="muted" style="margin-left: 12px;">Projects</span></header>
+  <header style="display: flex; justify-content: space-between; align-items: center;">
+    <a href="{{ url_for('index') }}">Model CICD</a>
+    <span>
+      <a href="{{ url_for('keys_form') }}" class="btn"
+         style="text-decoration: none; padding: 6px 14px; font-size: 13px;">API keys</a>
+      <a href="{{ url_for('connect_project_form') }}" class="btn btn-primary"
+         style="text-decoration: none; padding: 6px 14px; font-size: 13px;">+ New Project</a>
+    </span>
+  </header>
   <main>{% block content %}{% endblock %}</main>
 </body>
 </html>

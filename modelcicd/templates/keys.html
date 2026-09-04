@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}API keys — Model CICD{% endblock %}
+{% block content %}
+<p class="muted"><a class="link" href="{{ url_for('index') }}">&larr; home</a></p>
+<h1>API keys</h1>
+<p class="muted">Stored in <code>.env</code> — the same file, nowhere new. Never shown back
+  once saved; leave a field blank to keep what's already there.</p>
+
+{% if saved %}
+<div class="card flash-success">Saved: {{ saved }}.</div>
+{% endif %}
+
+<div class="card">
+  <form method="post" action="{{ url_for('keys_save') }}">
+    <label for="openrouter_key">OpenRouter
+      <span class="badge {{ 'approved' if key_status.openrouter else 'none' }}" style="margin-left: 6px;">
+        {{ 'configured' if key_status.openrouter else 'not set' }}</span></label>
+    <input id="openrouter_key" name="openrouter_key" type="password"
+           placeholder="{{ 'leave blank to keep the current key' if key_status.openrouter else 'OpenRouter API key' }}">
+
+    <label for="groq_key" style="margin-top: 16px;">Groq
+      <span class="badge {{ 'approved' if key_status.groq else 'none' }}" style="margin-left: 6px;">
+        {{ 'configured' if key_status.groq else 'not set' }}</span></label>
+    <input id="groq_key" name="groq_key" type="password"
+           placeholder="{{ 'leave blank to keep the current key' if key_status.groq else 'Groq API key' }}">
+
+    <label for="fireworks_key" style="margin-top: 16px;">Fireworks
+      <span class="badge {{ 'approved' if key_status.fireworks else 'none' }}" style="margin-left: 6px;">
+        {{ 'configured' if key_status.fireworks else 'not set' }}</span></label>
+    <input id="fireworks_key" name="fireworks_key" type="password"
+           placeholder="{{ 'leave blank to keep the current key' if key_status.fireworks else 'Fireworks API key' }}">
+
+    <button type="submit" class="btn btn-primary" style="margin-top: 14px;">Save</button>
+  </form>
+</div>
+
+<p class="muted">Same thing from the CLI:
+  <code>python -m modelcicd.cli set-key --provider groq</code>
+  (prompts, input hidden) &middot;
+  <code>python -m modelcicd.cli keys</code> (shows this same status)</p>
+{% endblock %}
