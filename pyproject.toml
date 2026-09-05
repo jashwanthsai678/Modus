@@ -13,6 +13,12 @@ dependencies = [
     "python-dotenv>=1.0",
     "PyYAML>=6.0",
     "Flask>=3.0",
+    # anyio (httpx's async backend) and click (Flask's CLI dependency) both
+    # started using Python 3.10+ `match` syntax in their own source past
+    # these versions — pinned below that so importing them doesn't hard-fail
+    # with a SyntaxError on this project's declared minimum Python (3.9).
+    "anyio<4.5",
+    "click<8.2",
 ]
 
 [project.scripts]

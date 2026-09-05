@@ -2,36 +2,188 @@
 <html>
 <head>
   <meta charset="utf-8">
+  <script>
+    // Applied before first paint, so a returning visitor's saved choice never
+    // flashes the wrong theme. No saved choice = follow the OS preference
+    // (handled purely in CSS below) — this only runs for an explicit choice.
+    (function () {
+      try {
+        var saved = localStorage.getItem("modelcicd-theme");
+        if (saved === "light" || saved === "dark") {
+          document.documentElement.setAttribute("data-theme", saved);
+        }
+      } catch (e) { /* localStorage unavailable — falls back to OS preference */ }
+    })();
+  </script>
   <title>{% block title %}Model CICD{% endblock %}</title>
   <style>
-    :root { color-scheme: dark; }
+    /* ── Theme tokens ──────────────────────────────────────────────────
+       Dark is the default (unguarded :root) since that's this app's
+       original look; an explicit choice (data-theme) always wins over the
+       OS preference, in both directions. Every rule below reads a token —
+       never a literal color — so both themes stay in one place. */
+    :root {
+      color-scheme: dark;
+      --bg: #0f1115;
+      --fg: #e6e6e6;
+      --surface: #171a21;
+      --surface-2: #1c1f26;
+      --input-bg: #0f1115;
+      --border: #2a2d34;
+      --border-soft: #23262c;
+      --muted: #9aa0aa;
+      --muted-2: #cfd3da;
+      --link: #7db2ff;
+      --accent: #2456c9;
+      --accent-bright: #3987e5;
+      --green: #0ca30c;
+      --success-bg: #10331c;
+      --success-border: #1e5c33;
+      --success-fg: #d3f5df;
+      --error-bg: #331414;
+      --error-border: #5c2626;
+      --error-fg: #f5d3d3;
+      --pending-bg: #3a2f10;
+      --pending-fg: #ffcf5c;
+      --approved-bg: #123a20;
+      --approved-fg: #7ee2a0;
+      --neutral-badge-bg: #23262c;
+      --neutral-badge-fg: #cfd3da;
+      --none-badge-fg: #9aa0aa;
+      --tick: #383835;
+      --tick-text: #898781;
+      --shadow: 0 1px 3px rgba(0, 0, 0, .4);
+    }
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme="dark"]) {
+        color-scheme: light;
+        --bg: #f6f7f9;
+        --fg: #1a1d23;
+        --surface: #ffffff;
+        --surface-2: #eef0f3;
+        --input-bg: #ffffff;
+        --border: #d8dbe2;
+        --border-soft: #e4e6ea;
+        --muted: #666e7a;
+        --muted-2: #3f434c;
+        --link: #1b4fc4;
+        --accent: #2456c9;
+        --accent-bright: #2f6fd6;
+        --green: #158a15;
+        --success-bg: #e8f7ec;
+        --success-border: #8fd6a6;
+        --success-fg: #146029;
+        --error-bg: #fdecec;
+        --error-border: #e08a8a;
+        --error-fg: #8a1f1f;
+        --pending-bg: #fff3cf;
+        --pending-fg: #7a5b00;
+        --approved-bg: #e3f8ea;
+        --approved-fg: #146029;
+        --neutral-badge-bg: #eef0f3;
+        --neutral-badge-fg: #4b5058;
+        --none-badge-fg: #6b7280;
+        --tick: #d8dbe2;
+        --tick-text: #7b8290;
+        --shadow: 0 1px 3px rgba(30, 34, 46, .08);
+      }
+    }
+    :root[data-theme="light"] {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --fg: #1a1d23;
+      --surface: #ffffff;
+      --surface-2: #eef0f3;
+      --input-bg: #ffffff;
+      --border: #d8dbe2;
+      --border-soft: #e4e6ea;
+      --muted: #666e7a;
+      --muted-2: #3f434c;
+      --link: #1b4fc4;
+      --accent: #2456c9;
+      --accent-bright: #2f6fd6;
+      --green: #158a15;
+      --success-bg: #e8f7ec;
+      --success-border: #8fd6a6;
+      --success-fg: #146029;
+      --error-bg: #fdecec;
+      --error-border: #e08a8a;
+      --error-fg: #8a1f1f;
+      --pending-bg: #fff3cf;
+      --pending-fg: #7a5b00;
+      --approved-bg: #e3f8ea;
+      --approved-fg: #146029;
+      --neutral-badge-bg: #eef0f3;
+      --neutral-badge-fg: #4b5058;
+      --none-badge-fg: #6b7280;
+      --tick: #d8dbe2;
+      --tick-text: #7b8290;
+      --shadow: 0 1px 3px rgba(30, 34, 46, .08);
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #0f1115;
+      --fg: #e6e6e6;
+      --surface: #171a21;
+      --surface-2: #1c1f26;
+      --input-bg: #0f1115;
+      --border: #2a2d34;
+      --border-soft: #23262c;
+      --muted: #9aa0aa;
+      --muted-2: #cfd3da;
+      --link: #7db2ff;
+      --accent: #2456c9;
+      --accent-bright: #3987e5;
+      --green: #0ca30c;
+      --success-bg: #10331c;
+      --success-border: #1e5c33;
+      --success-fg: #d3f5df;
+      --error-bg: #331414;
+      --error-border: #5c2626;
+      --error-fg: #f5d3d3;
+      --pending-bg: #3a2f10;
+      --pending-fg: #ffcf5c;
+      --approved-bg: #123a20;
+      --approved-fg: #7ee2a0;
+      --neutral-badge-bg: #23262c;
+      --neutral-badge-fg: #cfd3da;
+      --none-badge-fg: #9aa0aa;
+      --tick: #383835;
+      --tick-text: #898781;
+      --shadow: 0 1px 3px rgba(0, 0, 0, .4);
+    }
+
+    * { box-sizing: border-box; }
     body { font-family: -apple-system, "Segoe UI", Arial, sans-serif; margin: 0;
-           background: #0f1115; color: #e6e6e6; }
-    header { padding: 16px 24px; border-bottom: 1px solid #2a2d34; }
-    header a { color: #e6e6e6; text-decoration: none; font-weight: 600; }
+           background: var(--bg); color: var(--fg);
+           transition: background-color .15s ease, color .15s ease; }
+    header { padding: 14px 24px; border-bottom: 1px solid var(--border);
+             position: sticky; top: 0; background: var(--bg); z-index: 2;
+             backdrop-filter: blur(6px); }
+    header a.brand { color: var(--fg); text-decoration: none; font-weight: 700;
+                     font-size: 15px; letter-spacing: -.01em; }
     main { padding: 24px; max-width: 1100px; margin: 0 auto; }
     table { width: 100%; border-collapse: collapse; margin: 12px 0 28px; }
-    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #23262c;
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border-soft);
              font-size: 14px; }
-    th { color: #9aa0aa; font-weight: 600; text-transform: uppercase; font-size: 11px;
+    th { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 11px;
          letter-spacing: .04em; }
-    tr.approved { background: #10331c; }
-    tr.shortlisted td:first-child { color: #ffcf5c; }
+    tbody tr { transition: background-color .1s ease; }
+    tbody tr:hover { background: var(--surface); }
+    tr.approved { background: var(--success-bg); }
+    tr.approved:hover { background: var(--success-bg); filter: brightness(1.08); }
+    tr.shortlisted td:first-child { color: var(--pending-fg); }
     .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; }
-    .badge.pending { background: #3a2f10; color: #ffcf5c; }
-    .badge.approved { background: #123a20; color: #7ee2a0; }
-    .badge.tie { background: #23262c; color: #cfd3da; }
-    .badge.none { background: #23262c; color: #9aa0aa; }
+    .badge.pending { background: var(--pending-bg); color: var(--pending-fg); }
+    .badge.approved { background: var(--approved-bg); color: var(--approved-fg); }
+    .badge.tie { background: var(--neutral-badge-bg); color: var(--neutral-badge-fg); }
+    .badge.none { background: var(--neutral-badge-bg); color: var(--none-badge-fg); }
 
-    /* Chart tokens — validated against this page's card surface (#171a21):
-       node scripts/validate_palette.js "#3987e5" --mode dark --surface "#171a21"
-       node scripts/validate_palette.js "#0ca30c" --mode dark --surface "#171a21"
-       both PASS all checks. */
-    .chart { --bar-normal: #3987e5; --bar-approved: #0ca30c; --track: #23262c;
-             --tick: #383835; margin: 8px 0 4px; }
+    .chart { --bar-normal: var(--accent-bright); --bar-approved: var(--green);
+             --track: var(--border-soft); margin: 8px 0 4px; }
     .bar-row { display: grid; grid-template-columns: 220px 1fr 48px; align-items: center;
                gap: 12px; padding: 5px 0; position: relative; }
-    .bar-label { font-size: 13px; color: #cfd3da; white-space: nowrap; overflow: hidden;
+    .bar-label { font-size: 13px; color: var(--muted-2); white-space: nowrap; overflow: hidden;
                  text-overflow: ellipsis; display: flex; align-items: center; gap: 6px; }
     .bar-track { position: relative; height: 20px; background: var(--track);
                  border-radius: 0 4px 4px 0; }
@@ -39,65 +191,83 @@
                 transition: filter .1s; }
     .bar-fill.is-approved { background: var(--bar-approved); }
     .bar-row:hover .bar-fill, .bar-row:focus-within .bar-fill { filter: brightness(1.18); }
-    .bar-value { font-size: 12px; color: #9aa0aa; text-align: right; }
+    .bar-value { font-size: 12px; color: var(--muted); text-align: right; }
     .chart-axis { display: grid; grid-template-columns: 220px 1fr 48px; gap: 12px;
                   margin-top: 2px; }
     .chart-axis .ticks { display: flex; justify-content: space-between;
                           border-top: 1px solid var(--tick); padding-top: 4px; }
-    .chart-axis .ticks span { font-size: 11px; color: #898781; }
+    .chart-axis .ticks span { font-size: 11px; color: var(--tick-text); }
     .bar-tooltip { position: absolute; top: -6px; left: 220px; transform: translateY(-100%);
-                   background: #1c1f26; border: 1px solid #2a2d34; border-radius: 6px;
-                   padding: 6px 10px; font-size: 12px; color: #e6e6e6; white-space: nowrap;
-                   opacity: 0; visibility: hidden; pointer-events: none; z-index: 1; }
+                   background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
+                   padding: 6px 10px; font-size: 12px; color: var(--fg); white-space: nowrap;
+                   opacity: 0; visibility: hidden; pointer-events: none; z-index: 1;
+                   box-shadow: var(--shadow); }
     .bar-row:hover .bar-tooltip, .bar-row:focus-within .bar-tooltip {
       opacity: 1; visibility: visible; }
-    .bar-tooltip strong { color: #ffffff; }
+    .bar-tooltip strong { color: var(--fg); }
     .sparkline { vertical-align: middle; display: block; }
-    .card { background: #171a21; border: 1px solid #23262c; border-radius: 10px;
-            padding: 16px 20px; margin-bottom: 16px; }
-    .card.flash-success { border-color: #1e5c33; background: #10331c; color: #d3f5df; }
-    .card.flash-error { border-color: #5c2626; background: #331414; color: #f5d3d3; }
+    .card { background: var(--surface); border: 1px solid var(--border-soft); border-radius: 10px;
+            padding: 16px 20px; margin-bottom: 16px; box-shadow: var(--shadow); }
+    .card.flash-success { border-color: var(--success-border); background: var(--success-bg);
+                          color: var(--success-fg); }
+    .card.flash-error { border-color: var(--error-border); background: var(--error-bg);
+                        color: var(--error-fg); }
     .btn-approve { margin-top: 10px; padding: 8px 16px; border: none; border-radius: 6px;
-                   background: #0ca30c; color: #ffffff; font-size: 13px; font-weight: 600;
-                   cursor: pointer; }
+                   background: var(--green); color: #ffffff; font-size: 13px; font-weight: 600;
+                   cursor: pointer; transition: filter .1s; }
     .btn-approve:hover { filter: brightness(1.1); }
-    a.link { color: #7db2ff; text-decoration: none; }
+    a.link { color: var(--link); text-decoration: none; }
     a.link:hover { text-decoration: underline; }
-    .muted { color: #9aa0aa; font-size: 13px; }
-    code { background: #1c1f26; padding: 1px 6px; border-radius: 4px; }
+    .muted { color: var(--muted); font-size: 13px; }
+    code { background: var(--surface-2); padding: 1px 6px; border-radius: 4px; }
     h1 { font-size: 20px; margin-bottom: 4px; }
-    h2 { font-size: 15px; color: #cfd3da; margin-top: 28px; }
+    h2 { font-size: 15px; color: var(--muted-2); margin-top: 28px; }
 
-    label { display: block; font-size: 13px; color: #cfd3da; margin: 12px 0 4px; }
-    label .hint { color: #9aa0aa; font-weight: 400; }
+    label { display: block; font-size: 13px; color: var(--muted-2); margin: 12px 0 4px; }
+    label .hint { color: var(--muted); font-weight: 400; }
     input[type=text], input[type=email], input[type=number], input[type=url],
-    textarea, select {
-      width: 100%; box-sizing: border-box; background: #0f1115; color: #e6e6e6;
-      border: 1px solid #2a2d34; border-radius: 6px; padding: 8px 10px;
-      font-size: 14px; font-family: inherit;
+    input[type=password], textarea, select {
+      width: 100%; box-sizing: border-box; background: var(--input-bg); color: var(--fg);
+      border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
+      font-size: 14px; font-family: inherit; transition: border-color .1s ease;
     }
+    input:hover, textarea:hover, select:hover { border-color: var(--muted); }
     textarea { min-height: 90px; resize: vertical; }
-    fieldset { border: 1px solid #23262c; border-radius: 8px; padding: 12px 16px;
+    fieldset { border: 1px solid var(--border-soft); border-radius: 8px; padding: 12px 16px;
                margin: 10px 0; }
-    fieldset legend { padding: 0 6px; color: #9aa0aa; font-size: 12px;
+    fieldset legend { padding: 0 6px; color: var(--muted); font-size: 12px;
                       text-transform: uppercase; letter-spacing: .04em; }
     .row { display: grid; grid-template-columns: 1fr 2fr 1fr; gap: 10px; }
     .row3 { display: grid; grid-template-columns: 1fr 2fr 90px; gap: 10px; }
-    .btn { padding: 8px 16px; border: 1px solid #2a2d34; border-radius: 6px;
-           background: #1c1f26; color: #e6e6e6; font-size: 13px; font-weight: 600;
-           cursor: pointer; }
+    .btn { padding: 8px 16px; border: 1px solid var(--border); border-radius: 6px;
+           background: var(--surface-2); color: var(--fg); font-size: 13px; font-weight: 600;
+           cursor: pointer; transition: filter .1s ease, border-color .1s ease; }
     .btn:hover { filter: brightness(1.15); }
-    .btn-primary { background: #2456c9; border-color: #2456c9; color: #fff; }
+    .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .btn-icon { padding: 6px 10px; font-size: 15px; line-height: 1; }
     .checkline { display: flex; align-items: center; gap: 8px; margin: 10px 0; }
     .checkline input { width: auto; }
-    .errors { border-color: #5c2626; background: #331414; color: #f5d3d3; }
+    .errors { border-color: var(--error-border); background: var(--error-bg); color: var(--error-fg); }
     .errors ul { margin: 6px 0 0; padding-left: 18px; }
+
+    /* Accessibility: every interactive element gets a visible focus ring —
+       missing before, and easy to lose track of on a dark or light surface
+       alike since the browser default outline is barely visible on both. */
+    a:focus-visible, button:focus-visible, .btn:focus-visible, input:focus-visible,
+    textarea:focus-visible, select:focus-visible {
+      outline: 2px solid var(--accent-bright); outline-offset: 2px;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { transition: none !important; }
+    }
   </style>
 </head>
 <body>
   <header style="display: flex; justify-content: space-between; align-items: center;">
-    <a href="{{ url_for('index') }}">Model CICD</a>
-    <span>
+    <a href="{{ url_for('index') }}" class="brand">Model CICD</a>
+    <span style="display: flex; align-items: center; gap: 8px;">
+      <button type="button" id="theme_toggle" class="btn btn-icon"
+              title="Switch between light and dark" aria-label="Toggle color theme">🌓</button>
       <a href="{{ url_for('keys_form') }}" class="btn"
          style="text-decoration: none; padding: 6px 14px; font-size: 13px;">API keys</a>
       <a href="{{ url_for('connect_project_form') }}" class="btn btn-primary"
@@ -105,5 +275,25 @@
     </span>
   </header>
   <main>{% block content %}{% endblock %}</main>
+  <script>
+    (function () {
+      var root = document.documentElement;
+      var btn = document.getElementById("theme_toggle");
+      function current() {
+        var explicit = root.getAttribute("data-theme");
+        if (explicit) return explicit;
+        return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+      }
+      function apply(theme) {
+        root.setAttribute("data-theme", theme);
+        try { localStorage.setItem("modelcicd-theme", theme); } catch (e) { /* ignore */ }
+        btn.textContent = theme === "light" ? "☀️" : "🌙";
+      }
+      apply(current());
+      btn.addEventListener("click", function () {
+        apply(current() === "light" ? "dark" : "light");
+      });
+    })();
+  </script>
 </body>
 </html>

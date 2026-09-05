@@ -771,6 +771,74 @@ def test_scan_repo_aggregates_and_dedupes() -> None:
         check("carries the file", results[0]["file"].endswith("bot.py"))
 
 
+def test_split_results_separates_errors_from_found() -> None:
+    results = [{"file": "a.py", "model": "x"}, {"file": "b.py", "error": "boom"}]
+    found, errors = code_scan.split_results(results)
+    check("one found", len(found) == 1 and found[0]["file"] == "a.py")
+    check("one error", len(errors) == 1 and errors[0]["file"] == "b.py")
+
+
+def test_local_imports_follows_relative_python_import_only_in_repo() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo = Path(d)
+        pkg = repo / "agent"
+        pkg.mkdir()
+        (pkg / "prompts.py").write_text(
+            "TICKET_ROUTER_INSTRUCTIONS = 'be a routing assistant'\n", encoding="utf-8")
+        (pkg / "router.py").write_text(
+            "import os\nfrom groq import Groq\nfrom . import prompts\n"
+            "def route(): return prompts.TICKET_ROUTER_INSTRUCTIONS\n", encoding="utf-8")
+        hits = code_scan.local_imports(pkg / "router.py", repo.resolve())
+        names = [h.name for h in hits]
+        check("follows the sibling module", "prompts.py" in names, f"{names}")
+        check("never follows a third-party package (groq has no local file)",
+              "groq" not in names and len(hits) == 1, f"{names}")
+
+
+def test_local_imports_from_dotted_form_also_resolves() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        repo = Path(d)
+        pkg = repo / "agent"
+        pkg.mkdir()
+        (pkg / "prompts.py").write_text("X = 1\n", encoding="utf-8")
+        (pkg / "router.py").write_text(
+            "from .prompts import X\n", encoding="utf-8")
+        hits = code_scan.local_imports(pkg / "router.py", repo.resolve())
+        check("resolves 'from .prompts import X' too",
+              any(h.name == "prompts.py" for h in hits), f"{hits}")
+
+
+def test_scan_file_bundles_local_import_content_into_the_same_call() -> None:
+    import asyncio
+
+    with tempfile.TemporaryDirectory() as d:
+        repo = Path(d)
+        pkg = repo / "agent"
+        pkg.mkdir()
+        (pkg / "prompts.py").write_text(
+            "SECRET_MARKER_PROMPT = 'be a routing assistant'\n", encoding="utf-8")
+        (pkg / "router.py").write_text(
+            "from . import prompts\ndef route(): pass\n", encoding="utf-8")
+
+        seen_prompt = {}
+
+        async def fake_call_json(prompt, *, model, label, **kwargs):
+            seen_prompt["text"] = prompt
+            return {"calls": []}
+
+        original = code_scan.client_module.call_json
+        code_scan.client_module.call_json = fake_call_json
+        try:
+            asyncio.run(code_scan.scan_file(pkg / "router.py", scan_model="x",
+                                            repo_root=repo.resolve()))
+        finally:
+            code_scan.client_module.call_json = original
+        check("the imported file's content reached the same call",
+              "SECRET_MARKER_PROMPT" in seen_prompt.get("text", ""))
+        check("labeled as imported, not as the file being scanned",
+              "IMPORTED FILE:" in seen_prompt.get("text", ""))
+
+
 # ── runner: candidate selection respects a project's chosen providers ───────
 
 def test_select_candidates_filters_by_provider() -> None:

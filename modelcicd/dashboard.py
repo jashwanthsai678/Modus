@@ -106,7 +106,14 @@ def _load_scan_results(slug: str) -> list:
     p = _scan_results_path(slug)
     if not p.exists():
         return []
-    return json.loads(p.read_text(encoding="utf-8"))
+    return json.loads(p.read_text(encoding="utf-8")).get("candidates", [])
+
+
+def _load_scan_errors(slug: str) -> list:
+    p = _scan_results_path(slug)
+    if not p.exists():
+        return []
+    return json.loads(p.read_text(encoding="utf-8")).get("errors", [])
 
 
 def _fields_from_scan_candidate(proj, candidate: dict) -> "wizard_module.WizardFields":
@@ -294,10 +301,11 @@ def create_app() -> Flask:
         from . import code_scan as code_scan_module
         proj = project_module.load(slug)
         results = asyncio.run(code_scan_module.scan_repo(proj.repo_path))
-        found = [r for r in results if not r.get("error")]
+        found, errors = code_scan_module.split_results(results)
         path = _scan_results_path(slug)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(found, indent=2, ensure_ascii=False), encoding="utf-8")
+        path.write_text(json.dumps({"candidates": found, "errors": errors},
+                                   indent=2, ensure_ascii=False), encoding="utf-8")
         return redirect(url_for("scan_results", slug=slug), code=303)
 
     @app.route("/projects/<slug>/scan/results")
@@ -308,8 +316,9 @@ def create_app() -> Flask:
         except FileNotFoundError:
             abort(404, f"no project at {slug!r}")
         candidates = _load_scan_results(slug)
+        errors = _load_scan_errors(slug)
         return render_template("scan_results.html", project=proj, candidates=candidates,
-                              summary=code_scan_module.summary(candidates))
+                              errors=errors, summary=code_scan_module.summary(candidates))
 
     # ── Use case detail / approve / run detail — scoped and unscoped ────────
 

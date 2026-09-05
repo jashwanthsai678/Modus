@@ -189,11 +189,11 @@ def cmd_wizard(args) -> int:
             print(f"no scan results for {args.project!r} — run "
                  f"`scan-repo --project {args.project}` first.")
             return 2
-        results = json.loads(results_path.read_text(encoding="utf-8"))
-        if not 0 <= args.from_scan < len(results):
-            print(f"--from-scan must be between 0 and {len(results) - 1}.")
+        candidates = json.loads(results_path.read_text(encoding="utf-8")).get("candidates", [])
+        if not 0 <= args.from_scan < len(candidates):
+            print(f"--from-scan must be between 0 and {len(candidates) - 1}.")
             return 2
-        prefill = results[args.from_scan]
+        prefill = candidates[args.from_scan]
 
     repo_slug = args.project if (proj and proj.repo_path) else None
     fields = wizard_module.collect_cli(repo_slug=repo_slug, prefill=prefill)
@@ -251,20 +251,33 @@ def cmd_scan_repo(args) -> int:
 
     results = asyncio.run(code_scan_module.scan_repo(
         proj.repo_path, scan_model=args.scan_model, max_files=args.max_files))
-    found = [r for r in results if not r.get("error")]
-    errors = [r for r in results if r.get("error")]
+    found, errors = code_scan_module.split_results(results)
     counts = code_scan_module.summary(found)
 
     results_path = _scan_results_path(args.project)
     results_path.parent.mkdir(parents=True, exist_ok=True)
-    results_path.write_text(json.dumps(found, indent=2, ensure_ascii=False), encoding="utf-8")
+    results_path.write_text(
+        json.dumps({"candidates": found, "errors": errors}, indent=2, ensure_ascii=False),
+        encoding="utf-8")
 
     print()
+    if errors:
+        print(f"{len(errors)} of {len(results) if results else len(found) + len(errors)} "
+             f"file(s) could not be scanned — this is a REAL failure, not \"no LLM calls "
+             f"here\":")
+        for e in errors:
+            print(f"   {e['file']}: {e['error']}")
+        print()
     if not found:
-        print("no likely LLM call sites found. This is expected for code that builds its "
-             "prompts dynamically or through an agent/tool-calling framework — the scanner "
-             "reads for a literal call site, not for that kind of indirection. Define the "
-             "feature directly instead:")
+        if not errors:
+            print("no likely LLM call sites found. This is expected for code that builds its "
+                 "prompts dynamically or through an agent/tool-calling framework — the scanner "
+                 "reads for a literal call site, not for that kind of indirection. Define the "
+                 "feature directly instead:")
+        else:
+            print("no candidates to show — every file that could be scanned either errored "
+                 "(above) or genuinely had no LLM call. Fix the errors and scan again, or "
+                 "define the feature directly:")
         print(f"    python -m modelcicd.cli wizard --project {args.project}")
         return 0
 
@@ -276,8 +289,6 @@ def cmd_scan_repo(args) -> int:
         print(f"[{i}] {c['file']}  model={c.get('model')}  "
              f"confidence={c.get('confidence')}{flag}")
         print(f"     {prompt_preview}")
-    if errors:
-        print(f"\n{len(errors)} file(s) could not be scanned (shown with --verbose in a future pass).")
     if counts["high"] == 0:
         print("\nnothing here was high-confidence — worth double-checking against the file "
              "yourself, or just defining the feature directly:")

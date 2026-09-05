@@ -9,15 +9,30 @@ module asks the same kind of question about a piece of CODE. It reuses
 `client.call_json` — the one place this project calls a model — so there is
 no second HTTP-calling implementation.
 
-THIS SPENDS MONEY, LIKE `run`. One call per candidate file. Every caller
-(`cli.py scan-repo`, the dashboard's scan route) shows a file count first and
-asks before running it, exactly like `cli.py run` already does for a bench.
+THIS SPENDS MONEY, LIKE `run`. One call per candidate file, regardless of how
+many local imports get bundled into that call for context (see below) — every
+caller (`cli.py scan-repo`, the dashboard's scan route) shows a file count
+first and asks before running it, exactly like `cli.py run` already does for
+a bench.
 
 IT NEVER WRITES ANYTHING. A scan only ever proposes candidates — turning one
 into a real `use_case.yaml` still goes through the same wizard, confirmed by
 a person, that every other AI feature goes through.
+
+FOLLOWING LOCAL IMPORTS. A file that only builds a prompt or only picks a
+model, while the actual call lives in a file it imports (or vice versa), is
+invisible to a scanner that reads one file in total isolation — this is the
+`agent/router.py` + `agent/prompts.py` split kind of case. `local_imports()`
+is a cheap, best-effort, regex-level detector (same "prefilter, not the
+detector" spirit as the keyword prefilter below) that finds a file's own
+in-repo imports — never third-party packages, which aren't part of the
+connected project anyway — and `scan_file` bundles their content into the
+SAME single call as extra context, clearly separated from the file actually
+being scanned so line numbers stay unambiguous. Still one model call per
+candidate file; the call just sees more of the picture.
 """
 import asyncio
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -25,6 +40,7 @@ from . import client as client_module
 
 SCAN_CONCURRENCY = 6
 DEFAULT_SCAN_MODEL = "openai/gpt-4o-mini"
+MAX_IMPORT_FILES = 3
 
 _SKIP_DIRS = {".git", "node_modules", "venv", ".venv", "__pycache__", "dist",
              "build", "target", "vendor", ".idea", ".vscode", "bin", "obj"}
@@ -89,6 +105,99 @@ def summary(results: list) -> dict:
     return {"high": high, "low": low, "total": len(results)}
 
 
+def split_results(results: list) -> tuple:
+    """One shared place to separate real candidates from failed calls —
+    every caller used to do this filtering itself, which is how a scan that
+    failed outright ended up looking identical to one that genuinely found
+    nothing (the errors were simply discarded before anyone decided what to
+    show). Returns (found, errors)."""
+    found = [r for r in results if not r.get("error")]
+    errors = [r for r in results if r.get("error")]
+    return found, errors
+
+
+# Local-import detection: cheap, regex-level, best-effort — same "prefilter,
+# not the detector" spirit as the keyword prefilter. Only ever follows an
+# import that resolves to a real file INSIDE the repo; a third-party package
+# import is never followed (its source isn't part of the connected project).
+_PY_FROM_RE = re.compile(r'^\s*from\s+(?P<dots>\.*)(?P<mod>[\w.]*)\s+import\s+(?P<names>[^\n#]+)', re.M)
+_PY_IMPORT_RE = re.compile(r'^\s*import\s+(?P<mod>[\w][\w.]*)', re.M)
+_JS_IMPORT_RE = re.compile(r'''(?:require\(\s*|from\s+)['"](?P<mod>\.{1,2}/[^'"]+)['"]''')
+
+
+def _under_repo(repo_root: Path, candidate: Path) -> Optional[Path]:
+    try:
+        resolved = candidate.resolve()
+        resolved.relative_to(repo_root)
+    except (OSError, ValueError):
+        return None
+    return resolved if resolved.is_file() else None
+
+
+def _resolve_py_target(dots: str, mod: str, names: str, from_dir: Path, repo_root: Path) -> list:
+    hits = []
+    if dots:
+        base = from_dir
+        for _ in range(len(dots) - 1):
+            base = base.parent
+        targets = [mod] if mod else [n.split(" as ")[0].strip().rstrip(",")
+                                     for n in re.split(r'[,\s]+', names.strip())]
+    else:
+        if not mod:
+            return hits
+        base = repo_root
+        targets = [mod]
+    for t in targets:
+        t = t.strip()
+        if not t or not all(part.isidentifier() for part in t.split(".")):
+            continue
+        candidate = base.joinpath(*t.split("."))
+        hit = (_under_repo(repo_root, candidate.with_suffix(".py"))
+              or _under_repo(repo_root, candidate / "__init__.py"))
+        if hit:
+            hits.append(hit)
+    return hits
+
+
+def _resolve_js_target(mod: str, from_dir: Path, repo_root: Path) -> Optional[Path]:
+    base = (from_dir / mod)
+    for suf in ("", ".js", ".jsx", ".ts", ".tsx",
+               "/index.js", "/index.jsx", "/index.ts", "/index.tsx"):
+        hit = _under_repo(repo_root, Path(str(base) + suf))
+        if hit:
+            return hit
+    return None
+
+
+def local_imports(path: Path, repo_root: Path, *, max_files: int = MAX_IMPORT_FILES) -> list:
+    """This file's own local (in-repo) imports, resolved to real file paths —
+    best-effort, Python- and JS/TS-style import syntax only, capped at
+    `max_files`."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return []
+    from_dir = path.resolve().parent
+    hits = []
+    for m in _PY_FROM_RE.finditer(text):
+        hits.extend(_resolve_py_target(m.group("dots"), m.group("mod"), m.group("names"),
+                                       from_dir, repo_root))
+    for m in _PY_IMPORT_RE.finditer(text):
+        hits.extend(_resolve_py_target("", m.group("mod"), "", from_dir, repo_root))
+    for m in _JS_IMPORT_RE.finditer(text):
+        hit = _resolve_js_target(m.group("mod"), from_dir, repo_root)
+        if hit:
+            hits.append(hit)
+
+    seen, deduped = set(), []
+    for h in hits:
+        if h == path.resolve() or h in seen:
+            continue
+        seen.add(h)
+        deduped.append(h)
+    return deduped[:max_files]
+
+
 _PROMPT = """You are reading ONE source file to find where it calls an LLM API to
 generate text (a chat/completion/generation call to any provider — OpenAI,
 Anthropic, Google, Groq, a self-hosted model, anything). This is a code-reading
@@ -98,14 +207,17 @@ FILE: {path}
 ```
 {content}
 ```
-
-For each LLM call site found, report:
+{imports_block}
+For each LLM call site found IN THE FILE ABOVE (not in any imported file shown
+below it for context — those are only there to help you follow the prompt or
+model through, "line" must always refer to FILE, never to an imported file),
+report:
 - model: the literal model id string if one is hardcoded (e.g. "gpt-4o-mini"),
   else null
 - prompt: the system prompt / instructions text passed to the call, verbatim
-  if it appears in the file, else a short (<200 char) description of what's
-  passed
-- line: the approximate line number of the call
+  if it appears in the file OR one of the imported files shown below, else a
+  short (<200 char) description of what's passed
+- line: the approximate line number of the call, in FILE
 - confidence: "high" if this is clearly a text-generation LLM call, "low" if
   you're not sure
 
@@ -115,15 +227,49 @@ Return ONLY valid JSON, no markdown fences:
 If there are no LLM call sites in this file, return {{"calls": []}}.
 """
 
+_IMPORTS_BLOCK = """
+For additional context only — these are files {path} imports locally in this
+repo. Use them to resolve a prompt or model that FILE builds via a function
+call into one of these, but every "line" you report must still point into
+FILE, never into one of these:
+{sections}
+"""
 
-async def scan_file(path: Path, *, scan_model: str, max_file_bytes: int = 40_000) -> list:
+
+def _imports_block(path: Path, repo_root: Optional[Path], max_file_bytes: int,
+                   max_import_files: int) -> str:
+    if repo_root is None:
+        return ""
+    imports = local_imports(path, repo_root, max_files=max_import_files)
+    if not imports:
+        return ""
+    sections = []
+    for p in imports:
+        try:
+            rel = p.relative_to(repo_root)
+        except ValueError:
+            rel = p
+        try:
+            text = p.read_text(encoding="utf-8", errors="ignore")[:max_file_bytes]
+        except OSError:
+            continue
+        sections.append(f"IMPORTED FILE: {rel}\n```\n{text}\n```")
+    if not sections:
+        return ""
+    return _IMPORTS_BLOCK.format(path=path.name, sections="\n\n".join(sections))
+
+
+async def scan_file(path: Path, *, scan_model: str, max_file_bytes: int = 40_000,
+                    repo_root: Optional[Path] = None,
+                    max_import_files: int = MAX_IMPORT_FILES) -> list:
     try:
         text = path.read_text(encoding="utf-8", errors="ignore")[:max_file_bytes]
     except OSError:
         return []
+    imports_block = _imports_block(path, repo_root, max_file_bytes, max_import_files)
     try:
         data = await client_module.call_json(
-            _PROMPT.format(path=path.name, content=text),
+            _PROMPT.format(path=path.name, content=text, imports_block=imports_block),
             model=scan_model, label=f"scan[{path.name}]", required=("calls",),
             temperature=0.0, max_tokens=1200)
     except Exception as exc:                        # noqa: BLE001
@@ -141,12 +287,13 @@ async def scan_repo(repo_path, *, scan_model: str = DEFAULT_SCAN_MODEL,
     """Scans every candidate file concurrently, returns every call site
     found, high-confidence first. Deduplicates entries that are effectively
     the same call (same file, same model string)."""
+    repo_root = Path(repo_path).resolve()
     files = candidate_files(repo_path, max_files=max_files)
     gate = asyncio.Semaphore(SCAN_CONCURRENCY)
 
     async def one(p: Path) -> list:
         async with gate:
-            return await scan_file(p, scan_model=scan_model)
+            return await scan_file(p, scan_model=scan_model, repo_root=repo_root)
 
     results = await asyncio.gather(*(one(p) for p in files))
     flat = [c for group in results for c in group]

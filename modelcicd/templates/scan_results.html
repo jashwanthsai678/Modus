@@ -6,11 +6,27 @@
 <p class="muted">Pick one to use as a starting point for a new AI feature — you still
   confirm (and can edit) the prompt, and you always add the test cases yourself.</p>
 
+{% if errors %}
+<div class="card errors">
+  <p><strong>{{ errors|length }} file(s) could not be scanned</strong> — this is a real
+    failure, not "no LLM calls here". An empty or partial result below may be incomplete
+    because of this, not because those files are clean.</p>
+  {% for e in errors %}
+  <div class="muted">{{ e.file }}: {{ e.error }}</div>
+  {% endfor %}
+</div>
+{% endif %}
+
 {% if not candidates %}
 <div class="card">
+  {% if errors %}
+  <p>No candidates to show — every scanned file either errored (above) or genuinely had
+    no LLM call. Fix the error(s) and scan again, or define the feature directly:</p>
+  {% else %}
   <p>No likely LLM call sites found. This is expected for code that builds its prompts
     dynamically or through an agent/tool-calling framework — the scanner reads for a
     literal call site, not that kind of indirection. Define the feature directly instead:</p>
+  {% endif %}
   <a class="btn btn-primary" href="{{ url_for('new_use_case', slug=project.slug) }}">Add an AI feature manually</a>
   <a class="btn" href="{{ url_for('scan_repo_form', slug=project.slug) }}">Scan again</a>
 </div>
