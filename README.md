@@ -767,3 +767,13 @@ judge never being a candidate, tier ranking, stale-state bugs, and so on).
 - **A key is never displayed back once saved.** `secrets.status()` reports
   whether one is set, never its value — the connect form and `/keys` show a
   configured/not-set badge, not the key itself.
+
+## Contributing
+
+Bug reports, ideas, and pull requests are welcome. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for how to get set up, run the test
+suite, and the conventions this codebase follows.
+
+## License
+
+Apache 2.0 — see [LICENSE](LICENSE).

@@ -1,0 +1,33 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 is the project's declared minimum (see pyproject.toml) — kept
+        # in the matrix deliberately, not just the newest version, because a
+        # dependency that silently requires a newer Python than it declares
+        # is exactly the kind of break this project already hit once
+        # (anyio/click both shipped 3.10+-only syntax under a version range
+        # that still claimed 3.9 support).
+        python-version: ["3.9", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: pip install -e .
+
+      - name: Run the dependency-free test suite
+        run: python -m modelcicd.tests.test_modelcicd
