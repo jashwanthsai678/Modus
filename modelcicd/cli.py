@@ -344,6 +344,10 @@ def cmd_run(args) -> int:
         print(f"   … and {len(candidates) - 12} more")
     if uc.endpoint:
         print(f"   + your live endpoint ({uc.endpoint.url}) as a baseline comparison")
+    if args.resample_shortlist:
+        print("           + if a tie-zone shortlist forms, each shortlisted candidate "
+             "is re-generated a couple more times too (extra generation + judge calls "
+             "— exact count depends on how many end up in the shortlist)")
 
     if not args.yes:
         try:
@@ -356,7 +360,8 @@ def cmd_run(args) -> int:
 
     try:
         result = asyncio.run(runner_module.execute(
-            uc, cat, candidates, state_root=_state_root(args), out_dir=_out_dir(args)))
+            uc, cat, candidates, state_root=_state_root(args), out_dir=_out_dir(args),
+            resample_candidates=args.resample_shortlist))
     except Exception as exc:                        # noqa: BLE001
         print(f"\nrefused or failed: {exc}")
         return 3
@@ -624,6 +629,12 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--models", default=None, help="comma-separated ids, explicit")
     r.add_argument("--limit", type=int, default=None)
     r.add_argument("--yes", action="store_true", help="skip the cost confirmation")
+    r.add_argument("--resample-shortlist", action="store_true",
+                   help="if a tie-zone shortlist forms, re-GENERATE each shortlisted "
+                        "candidate's answers a couple more times each (not just "
+                        "re-score the same answer) to check candidate-side variance, "
+                        "not just judge-side. Spends real extra generation calls — "
+                        "off by default.")
     r.add_argument("--project", default=None,
                   help="scope state/out and candidate providers to this connected project")
 

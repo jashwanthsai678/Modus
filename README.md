@@ -123,6 +123,21 @@ testing, measuring, and analytics all happen with zero human involvement —
 only the moment your application's actual behavior changes requires someone
 to say yes.
 
+**This is the actual differentiator: it's an agentic pipeline, not a
+one-off script you have to remember to re-run.** Once a use case exists,
+nobody manually re-benchmarks anything ever again — the discover → test →
+score → rank → notify loop runs by itself, on a schedule, indefinitely, and
+the only work left for a human is reading a report and clicking one of two
+buttons. That's a fundamentally different amount of effort than "someone
+remembers to re-check the model market every few months," which is what
+every team does today in practice. And it's not one checkpoint doing double
+duty — there are deliberately **two** separate human gates, not one:
+approving a candidate (changes what `resolve()` returns) and, only if your
+app isn't yet calling `resolve()`, a second and entirely separate
+confirmation to patch the literal model string in your real source file.
+Neither ever happens without a person explicitly clicking it — the
+automation covers everything *except* the decision that actually matters.
+
 ```
  catalogue.py          guardrails.py         sandbox.py        judge.py        rank.py         state.py
 ┌───────────────┐    ┌────────────────┐    ┌────────────┐    ┌───────────┐   ┌───────────┐   ┌──────────────┐

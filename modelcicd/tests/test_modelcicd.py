@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from modelcicd import (catalogue, client, code_patch, code_scan, config,  # noqa: E402
+from modelcicd import (bench, catalogue, client, code_patch, code_scan, config,  # noqa: E402
                        endpoint_client, guardrails, judge, project, rank, runner,
                        sandbox, scheduler, secrets, state, wizard)
 
@@ -496,6 +496,69 @@ def test_reject_with_nothing_pending_is_refused() -> None:
             check("refused", True)
 
 
+# ── state: concurrent writers to the same use case never lose an update ─────
+
+def test_lock_file_is_cleaned_up_after_normal_use() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        state.set_min_improvement("uc-lock", 0.3, root=root)
+        lock_path = state._path("uc-lock", root).with_suffix(".json.lock")
+        check("no leftover .lock file", not lock_path.exists(), f"{lock_path}")
+
+
+def test_stuck_lock_raises_timeout_instead_of_corrupting_state() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        target = state._path("uc-stuck", root)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        lock = state._FileLock(target)
+        lock._path.parent.mkdir(parents=True, exist_ok=True)
+        lock._path.touch()  # simulate another process already holding it
+        original_timeout = state._LOCK_TIMEOUT_S
+        state._LOCK_TIMEOUT_S = 0.1
+        try:
+            state.set_min_improvement("uc-stuck", 0.3, root=root)
+            check("raised", False)
+        except TimeoutError:
+            check("raised", True)
+        finally:
+            state._LOCK_TIMEOUT_S = original_timeout
+            lock._path.unlink()
+        check("state file untouched by the failed writer", not target.exists())
+
+
+def test_concurrent_record_run_never_loses_an_update() -> None:
+    """The exact bug a missing lock would allow: N threads all recording a
+    run for the SAME use case at once, each appending its own distinct
+    history entry. Without the lock, a read-modify-write race can silently
+    drop entries when two writers save based on the same stale read — this
+    proves none are lost."""
+    import threading
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        n = 8
+        barrier = threading.Barrier(n)
+
+        def record(i: int) -> None:
+            barrier.wait()  # maximize actual overlap, not just "runs eventually"
+            board = {"useCase": "uc-race", "tiers": {"paid-low": [
+                {"model": f"model-{i}", "tier": "paid-low", "score": 3.0,
+                 "price_out": 0.1, "isApproved": False, "wouldShipRate": 1.0,
+                 "counts": {"ok": 1}}]}, "shortlists": {}}
+            state.record_run("uc-race", board, root=root)
+
+        threads = [threading.Thread(target=record, args=(i,)) for i in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        final = state.load("uc-race", root=root)
+        check(f"all {n} concurrent writes landed in history",
+             len(final.get("history") or []) == n, f"{len(final.get('history') or [])}")
+
+
 def test_all_pending_finds_items_across_projects_and_unscoped() -> None:
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -588,6 +651,47 @@ def test_judge_score_repeated_reports_the_spread() -> None:
         judge.client_module.call_json = original
     check("spread is max-min across repeats", result["spread"] == 2.0, f"{result}")
     check("weighted is the median", result["weighted"] == 4.0, f"{result}")
+
+
+def test_bench_resample_candidates_for_spread_measures_candidate_noise() -> None:
+    """A DIFFERENT source of noise than judge-spread: this re-GENERATES the
+    candidate's answer, not just re-scores an existing one. Single test
+    case on purpose, so the spread (max-min across the 2 repeats) is
+    order-invariant regardless of how asyncio interleaves the concurrent
+    calls — the point under test is the mechanism, not a race-prone exact
+    ordering."""
+    import asyncio
+    import itertools
+
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+    uc.test_cases = uc.test_cases[:1]
+    criteria_ids = [c.id for c in (uc.test_cases[0].rubric or uc.rubric)]
+    judge_scores = itertools.cycle([5, 3])
+
+    async def fake_call_json(prompt, *, model, label, **kwargs):
+        if label.startswith("sandbox["):
+            return {"reply": "hi"}
+        score = next(judge_scores)
+        return {"scores": {cid: score for cid in criteria_ids}, "reasons": {}, "wouldShip": True}
+
+    original = client.call_json
+    client.call_json = fake_call_json
+    try:
+        result = asyncio.run(bench.resample_candidates_for_spread(
+            uc, ["vendor/x"], "openai/gpt-4o", repeats=2))
+    finally:
+        client.call_json = original
+    check("candidate spread measured from repeated generation",
+         result.get("vendor/x") == 2.0, f"{result}")
+
+
+def test_rank_attach_candidate_spread_only_touches_named_rows() -> None:
+    board = rank.build(_bench(_row("a", 4.4), _row("b", 4.3)), None)
+    rank.attach_candidate_spread(board, {"a": 0.4})
+    row_a = next(r for r in board["tiers"]["unknown"] if r["model"] == "a")
+    row_b = next(r for r in board["tiers"]["unknown"] if r["model"] == "b")
+    check("named row updated", row_a["candidateSpread"] == 0.4)
+    check("unnamed row stays None", row_b["candidateSpread"] is None)
 
 
 def test_rank_attach_judge_spread_only_touches_named_rows() -> None:

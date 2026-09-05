@@ -67,6 +67,14 @@ def build(bench_result: dict, catalogue: Optional[dict] = None,
             # means "not re-checked" (outside the tie zone), not "zero
             # noise" — don't read a bare None as a clean bill of health.
             "judgeSpread": None,
+            # Filled in later by `attach_candidate_spread`, only when a
+            # caller opted into `bench.resample_candidates_for_spread` —
+            # how much the CANDIDATE's own answer varied across repeated,
+            # freshly-generated attempts at the same test case. A different
+            # source of noise than judgeSpread: that one re-scores the same
+            # answer, this one re-asks the question. None means "not
+            # measured", not "zero noise".
+            "candidateSpread": None,
         })
 
     tiers: dict = {}
@@ -104,6 +112,18 @@ def attach_judge_spread(board: dict, spread_by_model: dict) -> None:
                 row["judgeSpread"] = spread_by_model[row["model"]]
 
 
+def attach_candidate_spread(board: dict, spread_by_model: dict) -> None:
+    """Writes `candidateSpread` onto whichever rows are in `spread_by_model`
+    — mutates `board` in place, called after `build()` once a caller has
+    opted into `bench.resample_candidates_for_spread` for the tie zone. A
+    model not in `spread_by_model` keeps `candidateSpread: None` — never
+    re-sampled, not assumed noise-free."""
+    for band in board.get("tiers", {}).values():
+        for row in band:
+            if row["model"] in spread_by_model:
+                row["candidateSpread"] = spread_by_model[row["model"]]
+
+
 def best_overall(board: dict) -> Optional[dict]:
     """The single best-scoring candidate across every tier, for the
     approved-vs-candidate comparison the notifier needs. Ties within a tier are
@@ -138,8 +158,11 @@ def report(board: dict) -> str:
             approved = "  <- currently approved" if r["isApproved"] else ""
             price = f"${r['price_out']:.2f}/M" if r.get("price_out") is not None else "  -  "
             spread = f"  (judge spread ±{r['judgeSpread']:.2f})" if r.get("judgeSpread") is not None else ""
+            cand_spread = (f"  (candidate spread ±{r['candidateSpread']:.2f})"
+                          if r.get("candidateSpread") is not None else "")
             lines.append(f"  {flag}{i:>3}  {r['model']:<44} {r['score']:.2f}  "
-                         f"{price:>9}  ship={r.get('wouldShipRate', 0):.0%}{approved}{spread}")
+                         f"{price:>9}  ship={r.get('wouldShipRate', 0):.0%}{approved}"
+                         f"{spread}{cand_spread}")
         lines.append("")
     lines += [f"  * = within {board.get('noise')} of this tier's best — a TIE "
              f"at one sample per test case, not a ranking.",

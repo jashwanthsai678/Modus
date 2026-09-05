@@ -46,12 +46,19 @@ def select_candidates(uc: UseCase, cat: dict, *, providers: Optional[list] = Non
 
 async def execute(uc: UseCase, cat: dict, candidates: list, *,
                   state_root: Optional[Path] = None,
-                  out_dir: Optional[Path] = None) -> dict:
+                  out_dir: Optional[Path] = None,
+                  resample_candidates: bool = False) -> dict:
     """Runs the bench, ranks it, deepens judging on just the tie zone,
     saves the run file, records state, and notifies if a candidate is
     pending AND hasn't already been notified about. Returns everything a
     caller needs to report what happened, without needing to redo any of
-    it."""
+    it.
+
+    `resample_candidates` OPTS IN TO RE-GENERATING (not just re-scoring)
+    the tie-zone shortlist a few more times each, to surface CANDIDATE-side
+    noise on top of the judge-side noise `rejudge_for_spread` already
+    always checks. Off by default — unlike judge-spread, this spends real
+    extra generation calls, so it's never turned on silently."""
     result = await bench_module.run(
         candidates, uc, provider_by_model=catalogue_module.provider_map(cat))
 
@@ -68,6 +75,11 @@ async def execute(uc: UseCase, cat: dict, candidates: list, *,
         spread_map = await bench_module.rejudge_for_spread(
             result, uc, result.get("judge") or uc.judge_model, tie_zone)
         rank_module.attach_judge_spread(board, spread_map)
+        if resample_candidates:
+            candidate_spread_map = await bench_module.resample_candidates_for_spread(
+                uc, tie_zone, result.get("judge") or uc.judge_model,
+                provider_by_model=catalogue_module.provider_map(cat))
+            rank_module.attach_candidate_spread(board, candidate_spread_map)
 
     text = rank_module.report(board)
 

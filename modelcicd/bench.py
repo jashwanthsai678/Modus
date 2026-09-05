@@ -128,3 +128,47 @@ async def rejudge_for_spread(bench_result: dict, uc: UseCase, judge_model: str,
 
     pairs = await asyncio.gather(*(one_model(m) for m in model_ids))
     return {model_id: spread for model_id, spread in pairs if spread is not None}
+
+
+async def resample_candidates_for_spread(uc: UseCase, model_ids: list, judge_model: str,
+                                         *, provider_by_model: Optional[dict] = None,
+                                         repeats: int = 2) -> dict:
+    """RE-GENERATES each given candidate's answer to every test case, several
+    more times each, judging every new answer — a different source of noise
+    than `rejudge_for_spread`, which only re-scores an answer that already
+    exists. This is the one the single-sample pipeline genuinely can't see
+    on its own: the same model asked the same question twice can give a
+    meaningfully different answer, and a leaderboard built from one sample
+    can't tell a real edge from that kind of luck.
+
+    THIS SPENDS REAL EXTRA GENERATION CALLS, NOT JUST JUDGE CALLS — unlike
+    `rejudge_for_spread`, it is never wired in automatically. A caller opts
+    in explicitly, and even then only for a tie-zone shortlist a caller
+    already identified, never the whole field.
+
+    Returns {model_id: mean_spread}, same shape as `rejudge_for_spread`."""
+    gate = asyncio.Semaphore(CANDIDATE_CONCURRENCY)
+
+    async def one_sample(model_id: str, tc, provider: str) -> Optional[float]:
+        async with gate:
+            outcome = await sandbox_module.run_one(model_id, uc, tc, provider=provider)
+        if outcome.get("status") != "ok":
+            return None
+        scored = await judge_module.score_one(model_id, judge_model, uc, tc, outcome["output"])
+        return scored["weighted"] if scored.get("status") == "ok" else None
+
+    async def one_test_case(model_id: str, tc, provider: str) -> Optional[float]:
+        samples = await asyncio.gather(
+            *(one_sample(model_id, tc, provider) for _ in range(repeats)))
+        real = [s for s in samples if s is not None]
+        return (max(real) - min(real)) if len(real) >= 2 else None
+
+    async def one_model(model_id: str) -> tuple:
+        provider = (provider_by_model or {}).get(model_id, "openrouter")
+        spreads = await asyncio.gather(
+            *(one_test_case(model_id, tc, provider) for tc in uc.test_cases))
+        real = [s for s in spreads if s is not None]
+        return model_id, (round(sum(real) / len(real), 3) if real else None)
+
+    pairs = await asyncio.gather(*(one_model(m) for m in model_ids))
+    return {model_id: spread for model_id, spread in pairs if spread is not None}
