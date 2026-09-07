@@ -19,6 +19,8 @@ from typing import Callable, Optional
 
 import yaml
 
+from .config import DEFAULT_JUDGE_MODEL
+
 DEFAULT_TIERS = ["free", "paid-low", "paid-mid"]
 
 
@@ -35,7 +37,7 @@ class WizardFields:
     require_json: bool = True
     allow_free: bool = True
     tiers: list = field(default_factory=lambda: list(DEFAULT_TIERS))
-    judge_model: str = "openai/gpt-4o"
+    judge_model: str = DEFAULT_JUDGE_MODEL
     max_tokens: int = 1200
     notify_email: Optional[str] = None
     min_improvement: float = 0.20
@@ -49,6 +51,28 @@ class WizardFields:
     code_file: Optional[str] = None            # relative to the project's repo_path
     code_current_model: Optional[str] = None   # the exact string hardcoded there right now
     estimated_calls_per_day: Optional[int] = None   # rough usage, for rate-limit context
+
+
+def defaults_from_project(defaults: dict) -> WizardFields:
+    """A `WizardFields` carrying only a project's SHARED settings (rubric,
+    price ceiling, judge, notify threshold) — everything feature-specific
+    (name, prompt, test cases, endpoint, schedule, code target) stays at its
+    own dataclass default, for a caller to fill in per feature on top of
+    this. One place both the single-feature wizard and a bulk-create flow
+    apply the same project template from, so they can never disagree about
+    what "the project's defaults" means."""
+    f = WizardFields()
+    f.rubric = [dict(c) for c in (defaults.get("rubric") or [])]
+    f.max_price_in = float(defaults.get("maxPriceIn", f.max_price_in))
+    f.max_price_out = float(defaults.get("maxPriceOut", f.max_price_out))
+    f.min_context = int(defaults.get("minContext", f.min_context))
+    f.require_json = bool(defaults.get("requireJson", f.require_json))
+    f.allow_free = bool(defaults.get("allowFree", f.allow_free))
+    f.tiers = list(defaults.get("tiers") or f.tiers)
+    f.judge_model = defaults.get("judgeModel") or f.judge_model
+    f.max_tokens = int(defaults.get("maxTokens", f.max_tokens))
+    f.min_improvement = float(defaults.get("minImprovement", f.min_improvement))
+    return f
 
 
 def validate(f: WizardFields) -> list:

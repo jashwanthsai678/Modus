@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Bulk-create — {{ project.name }}{% endblock %}
+{% block content %}
+<p class="muted"><a class="link" href="{{ url_for('scan_results', slug=project.slug) }}">&larr; scan results</a></p>
+<h1>Create {{ candidates|length }} AI feature(s)</h1>
+<p class="muted">Each candidate gets the project's shared rubric/price/judge (from
+  <a class="link" href="{{ url_for('project_defaults', slug=project.slug) }}">Project defaults</a>)
+  plus a set of test cases drafted by a model from its detected prompt — you'll review and can
+  edit every one of them before anything is actually saved.</p>
+
+<div class="card">
+  <p><strong>This spends money</strong>: one model call per candidate to draft its test cases,
+    using <code>{{ judge_model }}</code>.</p>
+  <p>candidates: {{ candidates|length }}</p>
+  <ul>
+    {% for c in candidates %}
+    <li>{{ c.file }} {% if c.model %}&mdash; <code>{{ c.model }}</code>{% endif %}</li>
+    {% endfor %}
+  </ul>
+  <form method="post">
+    <button type="submit" class="btn btn-primary">Draft {{ candidates|length }} feature(s)</button>
+  </form>
+</div>
+{% endblock %}

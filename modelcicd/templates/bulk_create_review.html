@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Review {{ fields_list|length }} feature(s) — {{ project.name }}{% endblock %}
+{% block content %}
+<p class="muted"><a class="link" href="{{ url_for('project_detail', slug=project.slug) }}">&larr; {{ project.name }}</a></p>
+<h1>Review before saving</h1>
+<p class="muted">Nothing is saved yet. Every name, prompt, and test case below is a draft — edit
+  anything, uncheck "skip this one" is off by default so a feature saves unless you tick
+  <strong>skip</strong> on it. All of them share the project's rubric/price/judge from
+  <a class="link" href="{{ url_for('project_defaults', slug=project.slug) }}">Project defaults</a> —
+  edit those separately if they're not right, then come back and re-draft.</p>
+
+<form method="post" action="{{ url_for('bulk_create_save', slug=project.slug) }}">
+  <input type="hidden" name="feature_count" value="{{ fields_list|length }}">
+  {% for f in fields_list %}
+  {% set outer_i = loop.index0 %}
+  <div class="card">
+    <div class="checkline" style="float: right;">
+      <input id="f{{ outer_i }}_skip" name="f{{ outer_i }}_skip" type="checkbox">
+      <label for="f{{ outer_i }}_skip" style="margin:0;">skip this one</label>
+    </div>
+    <label for="f{{ outer_i }}_name">name <span class="hint">(used in resolve("name"))</span></label>
+    <input id="f{{ outer_i }}_name" name="f{{ outer_i }}_name" type="text" value="{{ f.name }}">
+
+    <label for="f{{ outer_i }}_system_prompt">system prompt</label>
+    <textarea id="f{{ outer_i }}_system_prompt" name="f{{ outer_i }}_system_prompt">{{ f.system_prompt }}</textarea>
+
+    {% if f.code_file %}
+    <div class="row">
+      <div>
+        <label>code file <span class="hint">(relative to the repo)</span></label>
+        <input name="f{{ outer_i }}_code_file" type="text" value="{{ f.code_file }}">
+      </div>
+      <div>
+        <label>model string hardcoded there</label>
+        <input name="f{{ outer_i }}_code_current_model" type="text" value="{{ f.code_current_model or '' }}">
+      </div>
+    </div>
+    {% endif %}
+
+    <h2 style="margin-top: 18px;">Test cases <span class="hint">drafted by {{ judge_model }} — check these before saving</span></h2>
+    {% if not f.test_cases %}
+    <p class="muted">Nothing was drafted for this one — add at least one by hand below, or it'll
+      be skipped when you save (a feature needs at least one test case).</p>
+    {% endif %}
+    {% for i in range(6) %}
+    {% set tc = f.test_cases[i] if i < f.test_cases|length else None %}
+    <fieldset>
+      <legend>test case {{ i + 1 }}</legend>
+      <div class="row">
+        <div>
+          <label>id</label>
+          <input name="f{{ outer_i }}_tc_id" type="text" value="{{ tc.id if tc else '' }}">
+        </div>
+        <div>
+          <label>input</label>
+          <input name="f{{ outer_i }}_tc_input" type="text" value="{{ tc.input if tc else '' }}">
+        </div>
+        <div>
+          <label>reference <span class="hint">(drafted, not guaranteed correct — check it)</span></label>
+          <input name="f{{ outer_i }}_tc_reference" type="text"
+                 value="{{ tc.reference if tc and tc.reference else '' }}">
+        </div>
+      </div>
+    </fieldset>
+    {% endfor %}
+  </div>
+  {% endfor %}
+
+  <button type="submit" class="btn btn-primary">Create {{ fields_list|length }} AI feature(s)</button>
+</form>
+{% endblock %}

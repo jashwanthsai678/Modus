@@ -783,6 +783,95 @@ def test_project_providers_default_to_openrouter() -> None:
         check("providers round-trip", loaded.providers == ["openrouter"])
 
 
+# ── project defaults: the shared template every NEW feature starts from ─────
+
+def test_project_defaults_round_trip_and_never_touch_existing_use_cases() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        proj = project.create("Demo App", notify_email="demo@example.com", root=root)
+        check("fresh project has the built-in defaults",
+             proj.defaults["maxPriceOut"] == 3.00, f"{proj.defaults}")
+
+        project.set_defaults("demo-app", {
+            "rubric": [{"id": "clarity", "description": "is it clear", "weight": 2.0}],
+            "maxPriceOut": 1.00, "judgeModel": "vendor/judge",
+        }, root=root)
+        loaded = project.load("demo-app", root=root)
+        check("override applied", loaded.defaults["maxPriceOut"] == 1.00)
+        check("judge model applied", loaded.defaults["judgeModel"] == "vendor/judge")
+        check("unset fields keep the built-in default",
+             loaded.defaults["minContext"] == 32_000, f"{loaded.defaults}")
+        check("rubric saved", loaded.defaults["rubric"][0]["id"] == "clarity")
+
+
+def test_wizard_defaults_from_project_only_sets_shared_fields() -> None:
+    f = wizard.defaults_from_project({
+        "rubric": [{"id": "clarity", "description": "is it clear", "weight": 2.0}],
+        "maxPriceOut": 1.00, "judgeModel": "vendor/judge",
+    })
+    check("shared field applied", f.max_price_out == 1.00)
+    check("judge model applied", f.judge_model == "vendor/judge")
+    check("rubric applied", f.rubric[0]["id"] == "clarity")
+    check("feature-specific fields stay at their own default", f.name == "" and f.system_prompt == "")
+
+
+# ── code_scan: drafting test cases is a proposal, never a save ──────────────
+
+def test_generate_test_cases_returns_drafts_and_falls_back_to_empty_on_failure() -> None:
+    import asyncio
+
+    async def fake_call_json(prompt, *, model, label, **kwargs):
+        return {"cases": [
+            {"id": "angry_customer", "input": "This is unacceptable!", "reference": "An apology and next steps."},
+            {"id": "", "input": "  ", "reference": ""},  # blank input -> dropped
+        ]}
+
+    original = code_scan.client_module.call_json
+    code_scan.client_module.call_json = fake_call_json
+    try:
+        cases = asyncio.run(code_scan.generate_test_cases(
+            "You are a support agent.", input_structure="a string", model="x", count=2))
+    finally:
+        code_scan.client_module.call_json = original
+    check("kept the real case", len(cases) == 1, f"{cases}")
+    check("carries id/input/reference", cases[0]["id"] == "angry_customer"
+         and cases[0]["reference"] == "An apology and next steps.")
+
+    async def fake_fail(prompt, *, model, label, **kwargs):
+        raise RuntimeError("boom")
+
+    code_scan.client_module.call_json = fake_fail
+    try:
+        cases = asyncio.run(code_scan.generate_test_cases("x", model="x"))
+    finally:
+        code_scan.client_module.call_json = original
+    check("falls back to empty on failure, not an exception", cases == [])
+
+
+def test_generate_test_cases_tolerates_a_model_returning_a_list_instead_of_a_string() -> None:
+    """A REAL failure a free model produced live: {"input": ["part one", "part two"]}
+    instead of one string. This must not crash the whole bulk-create flow."""
+    import asyncio
+
+    async def fake_call_json(prompt, *, model, label, **kwargs):
+        return {"cases": [{"id": "weird", "input": ["This is unacceptable!", "Fix it now."],
+                           "reference": None}]}
+
+    original = code_scan.client_module.call_json
+    code_scan.client_module.call_json = fake_call_json
+    try:
+        cases = asyncio.run(code_scan.generate_test_cases("x", model="x"))
+    finally:
+        code_scan.client_module.call_json = original
+    check("did not crash, joined the list into text",
+         cases and cases[0]["input"] == "This is unacceptable! Fix it now.", f"{cases}")
+
+
+def test_suggest_name_from_file_path() -> None:
+    check("dir + stem", code_scan.suggest_name("support_bot/bot.py") == "support_bot_bot")
+    check("sanitized", code_scan.suggest_name("agent/router.py") == "agent_router")
+
+
 def test_read_repo_file_refuses_a_path_outside_the_repo() -> None:
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -862,13 +951,19 @@ def test_scan_repo_aggregates_and_dedupes() -> None:
                                      encoding="utf-8")
 
         async def fake_call_json(prompt, *, model, label, **kwargs):
-            return {"calls": [{"model": "gpt-4o-mini", "prompt": "hi", "line": 1,
-                               "confidence": "high"}]}
+            return {"calls": [{"model": "gpt-4o-mini", "prompt": "hi",
+                               "inputStructure": "a single string: the ticket text",
+                               "outputStructure": 'JSON: {"reply": "..."}',
+                               "line": 1, "confidence": "high"}]}
 
         original = code_scan.client_module.call_json
         code_scan.client_module.call_json = fake_call_json
         try:
             results = asyncio.run(code_scan.scan_repo(repo))
+            check("carries input structure",
+                 results[0]["inputStructure"] == "a single string: the ticket text")
+            check("carries output structure",
+                 results[0]["outputStructure"] == 'JSON: {"reply": "..."}')
         finally:
             code_scan.client_module.call_json = original
         check("found one candidate", len(results) == 1, f"{results}")

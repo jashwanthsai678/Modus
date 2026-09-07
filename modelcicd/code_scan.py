@@ -39,7 +39,7 @@ from typing import Optional
 from . import client as client_module
 
 SCAN_CONCURRENCY = 6
-DEFAULT_SCAN_MODEL = "openai/gpt-4o-mini"
+DEFAULT_SCAN_MODEL = "minimax/minimax-m3:free"
 MAX_IMPORT_FILES = 3
 
 _SKIP_DIRS = {".git", "node_modules", "venv", ".venv", "__pycache__", "dist",
@@ -217,12 +217,25 @@ report:
 - prompt: the system prompt / instructions text passed to the call, verbatim
   if it appears in the file OR one of the imported files shown below, else a
   short (<200 char) description of what's passed
+- inputStructure: what the CODE actually passes as input to this call — read
+  the real variables/parameters being sent, not the prompt's wording. If it's
+  one plain string, say so plainly (e.g. "a single string: the ticket text").
+  If it's built from multiple fields (e.g. an object with several named
+  values interpolated into the prompt, or a structured payload), name each
+  field you can see in the code. Never invent a field that isn't actually
+  read or passed somewhere in the file.
+- outputStructure: what shape of answer the code expects back — read how the
+  response is parsed or what format it's told to return (e.g. an explicit
+  "return exactly {{...}}" instruction, a `response_format`/JSON-mode setting,
+  or how the returned value is used afterward). Plain text if nothing in the
+  code suggests otherwise.
 - line: the approximate line number of the call, in FILE
 - confidence: "high" if this is clearly a text-generation LLM call, "low" if
   you're not sure
 
 Return ONLY valid JSON, no markdown fences:
-{{"calls": [{{"model": "...", "prompt": "...", "line": 1, "confidence": "high"}}]}}
+{{"calls": [{{"model": "...", "prompt": "...", "inputStructure": "...",
+  "outputStructure": "...", "line": 1, "confidence": "high"}}]}}
 
 If there are no LLM call sites in this file, return {{"calls": []}}.
 """
@@ -277,7 +290,10 @@ async def scan_file(path: Path, *, scan_model: str, max_file_bytes: int = 40_000
     out = []
     for c in data.get("calls") or []:
         out.append({"file": str(path), "model": c.get("model"),
-                    "prompt": c.get("prompt"), "line": c.get("line"),
+                    "prompt": c.get("prompt"),
+                    "inputStructure": c.get("inputStructure"),
+                    "outputStructure": c.get("outputStructure"),
+                    "line": c.get("line"),
                     "confidence": c.get("confidence") or "low"})
     return out
 
@@ -307,3 +323,103 @@ async def scan_repo(repo_path, *, scan_model: str = DEFAULT_SCAN_MODEL,
         deduped.append(c)
     deduped.sort(key=lambda c: c.get("confidence") != "high")
     return deduped
+
+
+# ── Test-case generation: draft, never final ─────────────────────────────
+#
+# LOW-RISK HALF, HIGHER-RISK HALF, BOTH STILL A DRAFT. Generating realistic
+# sample INPUTS from a prompt is safe to automate — a model guessing "here
+# are plausible support tickets" is a genuinely useful shortcut. Generating
+# the REFERENCE answer is the riskier half: a single generated answer
+# becoming silent ground truth, never looked at by a person, is exactly the
+# failure mode discussed at length before this was built — an AI defining
+# what "correct" means with nobody checking it. So this generates both, but
+# NOTHING here writes a use_case.yaml directly — every caller is expected to
+# show these to a person before `wizard.to_yaml` ever saves them, the same
+# "propose, then confirm" shape the scanner itself already uses.
+
+_TEST_CASE_PROMPT = """You are drafting realistic test cases for an AI feature, so its
+candidate models can be benchmarked against real-looking inputs.
+
+THE FEATURE'S SYSTEM PROMPT (this is handled separately by the code, already sent
+on every call — do not repeat it anywhere in what you write below):
+{prompt}
+
+HOW THE CODE WIRES UP A CALL, FOR YOUR BACKGROUND ONLY — this describes the
+code's internal request format, NOT the shape of the "input" you should write:
+  what it receives: {input_structure}
+  what it's expected to return: {output_structure}
+
+"input" MUST BE PLAIN CONTENT ONLY — the raw text (or data) a real end user would
+actually type or send, and NOTHING else. Never a JSON messages array, never the
+system prompt repeated, never any wrapper object — just the message itself, e.g.
+"My order hasn't arrived yet and it's been two weeks." The system prompt and any
+message-array wrapping is already handled elsewhere; writing it into "input" would
+send it twice.
+
+Write {count} realistic, DIVERSE sample inputs a real user of this feature might
+actually send — vary them (different tones, lengths, edge cases) rather than
+near-duplicates of each other. For each, also draft what a genuinely good answer
+would look like — this is a STARTING POINT for a human to review and edit, not a
+guaranteed-correct answer, so write your honest best attempt rather than a token
+placeholder.
+
+Return ONLY valid JSON, no markdown fences:
+{{"cases": [{{"id": "short_snake_case_id", "input": "...", "reference": "..."}}]}}
+"""
+
+
+async def generate_test_cases(prompt: str, *, input_structure: Optional[str] = None,
+                              output_structure: Optional[str] = None,
+                              model: str, count: int = 4) -> list:
+    """Drafts `count` {id, input, reference} test cases from a feature's
+    system prompt. Returns [] on any failure — the caller falls back to an
+    empty test-case list a person fills in by hand, the same starting point
+    the wizard already offers when nothing was auto-generated."""
+    try:
+        data = await client_module.call_json(
+            _TEST_CASE_PROMPT.format(
+                prompt=prompt,
+                input_structure=input_structure or "not determined — infer from the prompt",
+                output_structure=output_structure or "not determined — infer from the prompt",
+                count=count),
+            model=model, label="generate-test-cases", required=("cases",),
+            temperature=0.7, max_tokens=2000)
+    except Exception:                                   # noqa: BLE001
+        return []
+    out = []
+    for i, c in enumerate(data.get("cases") or []):
+        if not isinstance(c, dict):
+            continue
+        cid = _as_text(c.get("id")) or f"case_{i + 1}"
+        cin = _as_text(c.get("input"))
+        if not cin:
+            continue
+        out.append({"id": cid, "input": cin, "reference": _as_text(c.get("reference")) or None})
+    return out
+
+
+def _as_text(value) -> str:
+    """A model asked for a JSON string field doesn't always give one — a
+    free model in particular may return a list of fragments instead of one
+    joined string. Coerces whatever came back into plain text rather than
+    crashing on it; never invents content that wasn't there."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (list, tuple)):
+        return " ".join(_as_text(v) for v in value if v is not None).strip()
+    return str(value).strip()
+
+
+def suggest_name(file: str) -> str:
+    """A starting-point feature name from a scanned candidate's file path —
+    always shown for editing, never used to silently name anything. E.g.
+    "support_bot/bot.py" -> "support_bot_bot"."""
+    parts = Path(file).with_suffix("").parts[-2:]
+    raw = "_".join(parts) or "ai_feature"
+    safe = "".join(ch if ch.isalnum() else "_" for ch in raw.lower())
+    while "__" in safe:
+        safe = safe.replace("__", "_")
+    return safe.strip("_") or "ai_feature"

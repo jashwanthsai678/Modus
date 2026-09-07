@@ -229,7 +229,55 @@ def create_app() -> Flask:
         except FileNotFoundError:
             abort(404, f"no project at {slug!r}")
         cases = _use_cases_in(project_module.state_dir(slug))
-        return render_template("project.html", project=proj, cases=cases)
+        known = {c.get("useCase") for c in cases}
+        defined_not_run = []
+        for p in project_module.list_use_cases(slug):
+            if p.stem not in known:
+                defined_not_run.append(p.stem)
+        return render_template("project.html", project=proj, cases=cases,
+                              defined_not_run=sorted(defined_not_run))
+
+    # ── Project defaults — the shared template every NEW feature starts from ─
+
+    @app.route("/projects/<slug>/defaults", methods=["GET", "POST"])
+    def project_defaults(slug):
+        from . import config as config_module
+        try:
+            proj = project_module.load(slug)
+        except FileNotFoundError:
+            abort(404, f"no project at {slug!r}")
+
+        if request.method == "POST":
+            fields = wizard_module.WizardFields()
+            fields.rubric = []
+            c_ids = request.form.getlist("rubric_id")
+            c_descs = request.form.getlist("rubric_description")
+            c_weights = request.form.getlist("rubric_weight")
+            for i, c_id in enumerate(c_ids):
+                c_desc = c_descs[i] if i < len(c_descs) else ""
+                c_weight = c_weights[i] if i < len(c_weights) else ""
+                if c_id.strip() and c_desc.strip():
+                    fields.rubric.append({"id": c_id.strip(), "description": c_desc,
+                                          "weight": float(c_weight) if c_weight else 1.0})
+            defaults = {
+                "rubric": fields.rubric,
+                "maxPriceIn": float(request.form.get("max_price_in") or 0.50),
+                "maxPriceOut": float(request.form.get("max_price_out") or 3.00),
+                "minContext": int(request.form.get("min_context") or 32_000),
+                "requireJson": request.form.get("require_json") == "on",
+                "allowFree": request.form.get("allow_free") == "on",
+                "tiers": request.form.getlist("tiers") or list(wizard_module.DEFAULT_TIERS),
+                "judgeModel": request.form.get("judge_model", "").strip() or None,
+                "maxTokens": int(request.form.get("max_tokens") or 1200),
+                "minImprovement": float(request.form.get("min_improvement") or 0.20),
+            }
+            project_module.set_defaults(slug, defaults)
+            return redirect(url_for("project_defaults", slug=slug, saved="1"), code=303)
+
+        f = wizard_module.defaults_from_project(proj.defaults)
+        return render_template("project_defaults.html", project=proj, fields=f,
+                              default_judge_model=config_module.DEFAULT_JUDGE_MODEL,
+                              saved=request.args.get("saved"))
 
     # ── The wizard ───────────────────────────────────────────────────────────
 
@@ -319,6 +367,118 @@ def create_app() -> Flask:
         errors = _load_scan_errors(slug)
         return render_template("scan_results.html", project=proj, candidates=candidates,
                               errors=errors, summary=code_scan_module.summary(candidates))
+
+    # ── Bulk-create — every scan candidate at once, sharing the project's
+    # defaults, test cases drafted by a model — never saved without review.
+    #
+    # TWO STEPS, LIKE SCAN ITSELF. Step 1 shows the cost and asks (this
+    # spends real money: one generation call per candidate). Step 2 shows
+    # every draft — name, prompt, generated test cases — fully editable,
+    # and ONLY the explicit "Create N AI features" submit on THAT page
+    # writes anything. Nothing here ever saves a file a person hasn't seen.
+
+    @app.route("/projects/<slug>/scan/bulk-create")
+    def bulk_create_form(slug):
+        from . import config as config_module
+        try:
+            proj = project_module.load(slug)
+        except FileNotFoundError:
+            abort(404, f"no project at {slug!r}")
+        candidates = _load_scan_results(slug)
+        if not candidates:
+            return redirect(url_for("scan_results", slug=slug), code=303)
+        judge_model = proj.defaults.get("judgeModel") or config_module.DEFAULT_JUDGE_MODEL
+        return render_template("bulk_create.html", project=proj, candidates=candidates,
+                              judge_model=judge_model)
+
+    @app.route("/projects/<slug>/scan/bulk-create", methods=["POST"])
+    def bulk_create_generate(slug):
+        import asyncio
+        from . import code_scan as code_scan_module
+        from . import config as config_module
+        proj = project_module.load(slug)
+        candidates = _load_scan_results(slug)
+        judge_model = proj.defaults.get("judgeModel") or config_module.DEFAULT_JUDGE_MODEL
+        existing = {p.stem for p in project_module.list_use_cases(slug)}
+
+        async def draft(candidate: dict) -> dict:
+            cases = await code_scan_module.generate_test_cases(
+                candidate.get("prompt") or "", input_structure=candidate.get("inputStructure"),
+                output_structure=candidate.get("outputStructure"), model=judge_model)
+            return {"candidate": candidate, "cases": cases}
+
+        async def draft_all() -> list:
+            return await asyncio.gather(*(draft(c) for c in candidates))
+
+        drafts = asyncio.run(draft_all())
+
+        fields_list = []
+        used_names = set(existing)
+        for d in drafts:
+            candidate = d["candidate"]
+            base = code_scan_module.suggest_name(candidate.get("file") or "ai_feature")
+            name = base
+            n = 2
+            while name in used_names:
+                name = f"{base}_{n}"
+                n += 1
+            used_names.add(name)
+
+            code_file = candidate.get("file") or ""
+            if proj.repo_path:
+                try:
+                    code_file = str(Path(code_file).relative_to(Path(proj.repo_path)))
+                except ValueError:
+                    pass
+
+            f = wizard_module.defaults_from_project(proj.defaults)
+            f.name = name
+            f.system_prompt = candidate.get("prompt") or ""
+            f.test_cases = [{"id": c["id"], "input": c["input"], "reference": c.get("reference")}
+                            for c in (d["cases"] or [])]
+            if candidate.get("model"):
+                f.code_file = code_file or None
+                f.code_current_model = candidate.get("model")
+            fields_list.append(f)
+
+        return render_template("bulk_create_review.html", project=proj,
+                              fields_list=fields_list, judge_model=judge_model)
+
+    @app.route("/projects/<slug>/scan/bulk-create/save", methods=["POST"])
+    def bulk_create_save(slug):
+        try:
+            proj = project_module.load(slug)
+        except FileNotFoundError:
+            abort(404, f"no project at {slug!r}")
+        count = int(request.form.get("feature_count") or 0)
+        written = []
+        for i in range(count):
+            prefix = f"f{i}_"
+            f = wizard_module.defaults_from_project(proj.defaults)
+            f.name = request.form.get(f"{prefix}name", "").strip()
+            f.system_prompt = request.form.get(f"{prefix}system_prompt", "")
+            ids = request.form.getlist(f"{prefix}tc_id")
+            inputs = request.form.getlist(f"{prefix}tc_input")
+            refs = request.form.getlist(f"{prefix}tc_reference")
+            for j, tc_id in enumerate(ids):
+                tc_input = inputs[j] if j < len(inputs) else ""
+                tc_ref = refs[j] if j < len(refs) else ""
+                if tc_id.strip() and tc_input.strip():
+                    f.test_cases.append({"id": tc_id.strip(), "input": tc_input,
+                                         "reference": tc_ref.strip() or None})
+            code_file = request.form.get(f"{prefix}code_file", "").strip()
+            code_model = request.form.get(f"{prefix}code_current_model", "").strip()
+            if code_file and code_model:
+                f.code_file, f.code_current_model = code_file, code_model
+            if request.form.get(f"{prefix}skip") == "on" or not f.name or not f.system_prompt.strip():
+                continue
+            errors = wizard_module.validate(f)
+            if errors:
+                continue
+            dest = project_module.use_cases_dir(slug) / f"{f.name}.yaml"
+            dest.write_text(wizard_module.to_yaml(f), encoding="utf-8")
+            written.append(f.name)
+        return redirect(url_for("project_detail", slug=slug), code=303)
 
     # ── Use case detail / approve / run detail — scoped and unscoped ────────
 

@@ -11,13 +11,27 @@
   {% if project.repo_path %}
   <a class="btn" href="{{ url_for('scan_repo_form', slug=project.slug) }}">Scan repo for AI features</a>
   {% endif %}
+  <a class="btn" href="{{ url_for('project_defaults', slug=project.slug) }}">Project defaults</a>
   <span class="muted" style="margin-left: 10px; display: block; margin-top: 8px;">or from the CLI:
     <code>python -m modelcicd.cli wizard --project {{ project.slug }}</code></span>
 </div>
 
-{% if not cases %}
+{% if defined_not_run %}
+<div class="card">
+  <strong>{{ defined_not_run|length }} feature(s) defined, not benched yet</strong> — these have a
+  <code>use_case.yaml</code> but no run has happened for them, so they don't have a row below yet.
+  <ul style="margin: 8px 0 0; padding-left: 18px;">
+    {% for name in defined_not_run %}
+    <li><code>{{ name }}</code> —
+      <code>python -m modelcicd.cli run --use-case {{ project.slug }}/use_cases/{{ name }}.yaml --project {{ project.slug }}</code></li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if not cases and not defined_not_run %}
 <p class="muted">No AI feature has a state file yet — add one above, then run its bench.</p>
-{% else %}
+{% elif cases %}
 <table>
   <tr><th>AI feature</th><th>Approved model</th><th>Score</th><th>Pending</th><th>Runs</th><th>Trend</th></tr>
   {% for c in cases %}

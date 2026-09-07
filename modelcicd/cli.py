@@ -289,6 +289,10 @@ def cmd_scan_repo(args) -> int:
         print(f"[{i}] {c['file']}  model={c.get('model')}  "
              f"confidence={c.get('confidence')}{flag}")
         print(f"     {prompt_preview}")
+        if c.get("inputStructure"):
+            print(f"     input:  {c['inputStructure'][:100]}")
+        if c.get("outputStructure"):
+            print(f"     output: {c['outputStructure'][:100]}")
     if counts["high"] == 0:
         print("\nnothing here was high-confidence — worth double-checking against the file "
              "yourself, or just defining the feature directly:")
@@ -612,7 +616,7 @@ def build_parser() -> argparse.ArgumentParser:
     sr = sub.add_parser("scan-repo",
                         help="read the connected repo with a model to find likely LLM call sites")
     sr.add_argument("--project", required=True)
-    sr.add_argument("--scan-model", default="openai/gpt-4o-mini")
+    sr.add_argument("--scan-model", default="minimax/minimax-m3:free")
     sr.add_argument("--max-files", type=int, default=60)
     sr.add_argument("--yes", action="store_true", help="skip the cost confirmation")
 

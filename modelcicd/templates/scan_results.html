@@ -32,6 +32,13 @@
 </div>
 {% else %}
 <p class="muted">{{ summary.high }} high confidence, {{ summary.low }} low.</p>
+<div class="card">
+  <a class="btn btn-primary" href="{{ url_for('bulk_create_form', slug=project.slug) }}">
+    Create AI features from all {{ candidates|length }} candidate(s)</a>
+  <span class="muted" style="margin-left: 10px;">uses the project's shared rubric/price/judge —
+    <a class="link" href="{{ url_for('project_defaults', slug=project.slug) }}">edit those first</a>
+    if you haven't set them — and drafts test cases for each, which you review before anything saves.</span>
+</div>
 {% if summary.high == 0 %}
 <div class="card errors">
   Nothing here was high-confidence — worth double-checking against the file yourself
@@ -46,6 +53,12 @@
     &middot; confidence: {{ c.confidence }}
     {% if c.confidence != 'high' %}<span class="badge pending">verify before using</span>{% endif %}</div>
   <div class="muted" style="margin-top: 6px;">{{ (c.prompt or '')[:200] }}</div>
+  {% if c.inputStructure or c.outputStructure %}
+  <div style="margin-top: 8px; font-size: 13px;">
+    {% if c.inputStructure %}<div><span class="muted">input:</span> {{ c.inputStructure }}</div>{% endif %}
+    {% if c.outputStructure %}<div><span class="muted">output:</span> {{ c.outputStructure }}</div>{% endif %}
+  </div>
+  {% endif %}
   <a class="btn btn-primary" style="display: inline-block; margin-top: 10px;"
      href="{{ url_for('new_use_case', slug=project.slug, from_scan=loop.index0) }}">Use this</a>
 </div>

@@ -39,6 +39,21 @@ import yaml
 DEFAULT_DIR = Path(__file__).resolve().parent.parent / "projects"
 DEFAULT_PROVIDERS = ["openrouter"]
 
+# Every field here is one a person would otherwise have to re-type in the
+# wizard for EVERY feature in the same project — the rubric, the price
+# ceiling, the judge, how big a win has to be to notify anyone. Deliberately
+# NOT here: name, description, system prompt, test cases, endpoint, schedule,
+# code target — anything that is inherently specific to one feature, not
+# shared across a project. Set once via `set_defaults`, applied by
+# `wizard.defaults_from_project`, always still editable per feature.
+DEFAULT_PROJECT_DEFAULTS = {
+    "rubric": [],
+    "maxPriceIn": 0.50, "maxPriceOut": 3.00, "minContext": 32_000,
+    "requireJson": True, "allowFree": True, "tiers": ["free", "paid-low", "paid-mid"],
+    "judgeModel": None,   # None here means "use config.DEFAULT_JUDGE_MODEL"
+    "maxTokens": 1200, "minImprovement": 0.20,
+}
+
 
 @dataclass
 class Project:
@@ -48,6 +63,7 @@ class Project:
     notify_email: Optional[str] = None
     repo_path: Optional[str] = None
     providers: list = field(default_factory=lambda: list(DEFAULT_PROVIDERS))
+    defaults: dict = field(default_factory=lambda: dict(DEFAULT_PROJECT_DEFAULTS))
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -159,7 +175,8 @@ def _save(proj: Project, root: Optional[Path] = None) -> None:
     _yaml_path(proj.slug, root).write_text(yaml.safe_dump({
         "slug": proj.slug, "name": proj.name, "description": proj.description,
         "notifyEmail": proj.notify_email, "repoPath": proj.repo_path,
-        "providers": proj.providers, "createdAt": proj.created_at,
+        "providers": proj.providers, "defaults": proj.defaults,
+        "createdAt": proj.created_at,
     }, sort_keys=False), encoding="utf-8")
 
 
@@ -168,12 +185,29 @@ def load(slug: str, root: Optional[Path] = None) -> Project:
     if not p.exists():
         raise FileNotFoundError(f"no project registered at slug {slug!r}.")
     raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    defaults = dict(DEFAULT_PROJECT_DEFAULTS)
+    defaults.update(raw.get("defaults") or {})
     return Project(slug=raw.get("slug", slug), name=raw.get("name", slug),
                    description=raw.get("description", ""),
                    notify_email=raw.get("notifyEmail"),
                    repo_path=raw.get("repoPath"),
                    providers=raw.get("providers") or list(DEFAULT_PROVIDERS),
+                   defaults=defaults,
                    created_at=raw.get("createdAt", ""))
+
+
+def set_defaults(slug: str, defaults: dict, *, root: Optional[Path] = None) -> Project:
+    """Overwrites this project's shared feature defaults — the rubric,
+    price ceilings, judge model, and notify threshold every NEW feature in
+    it starts from. Never touches any `use_case.yaml` already written; a
+    feature only picks these up at the moment it's created, exactly like
+    editing a template doesn't rewrite documents already made from it."""
+    proj = load(slug, root)
+    merged = dict(DEFAULT_PROJECT_DEFAULTS)
+    merged.update(defaults)
+    proj.defaults = merged
+    _save(proj, root)
+    return proj
 
 
 def list_all(root: Optional[Path] = None) -> list:

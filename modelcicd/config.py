@@ -25,6 +25,19 @@ from typing import Optional
 
 import yaml
 
+# The judge every use case falls back to when its YAML doesn't name one.
+# ONE definition, referenced by `wizard.py` too — it was previously spelled
+# out as a literal in three separate places, which is exactly how a default
+# drifts apart between the CLI, the dashboard, and the loader.
+#
+# A FREE MODEL BY DEFAULT, ON PURPOSE. A judge runs once per candidate per
+# test case, so it's the single biggest per-run cost after the candidates
+# themselves — an expensive default is a bill someone didn't ask for on
+# their first run. This one is verified to return valid JSON through
+# `client.call_json`'s json_object path, which is the actual requirement.
+# Override per use case with `judgeModel:` in its YAML.
+DEFAULT_JUDGE_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
+
 # ── The rubric ────────────────────────────────────────────────────────────
 
 @dataclass
@@ -141,7 +154,7 @@ class UseCase:
     rubric: list                     # list[Criterion] — the default, per test case may override
     guardrails: Guardrails
     notify: Notify
-    judge_model: str = "openai/gpt-4o"
+    judge_model: str = DEFAULT_JUDGE_MODEL
     max_tokens: int = 1200
     endpoint: Optional[Endpoint] = None       # live baseline to compare candidates against
     schedule_interval_days: Optional[int] = None  # re-run automatically on this cadence
@@ -208,7 +221,7 @@ def load(path) -> UseCase:
                     min_improvement=float(n.get("minImprovement",
                                                 Notify.min_improvement)))
 
-    judge = raw.get("judgeModel") or "openai/gpt-4o"
+    judge = raw.get("judgeModel") or DEFAULT_JUDGE_MODEL
 
     endpoint = None
     e = raw.get("endpoint") or {}
