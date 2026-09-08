@@ -31,8 +31,8 @@
 <div class="card">
   <p><strong>candidates: {{ candidates|length }}</strong></p>
   {% if candidates %}
-  <p class="muted">cost: {{ (candidates|length) * (uc.test_cases|length) }} generation call(s) +
-    {{ (candidates|length) * (uc.test_cases|length) }} judge call(s)</p>
+  {% set calls = (candidates|length) * (uc.test_cases|length) %}
+  <p class="muted">cost: {{ calls }} generation call(s) + {{ calls }} judge call(s)</p>
   <ul>
     {% for c in candidates[:15] %}
     <li><code>{{ c }}</code></li>
@@ -44,6 +44,36 @@
         onsubmit="return confirm('Run {{ candidates|length }} candidate(s)?{% if tier != 'free' %}\n\nThis tier is NOT free — it will spend real money on your OpenRouter balance.{% endif %}');">
     <input type="hidden" name="tier" value="{{ tier }}">
     {% if limit %}<input type="hidden" name="limit" value="{{ limit }}">{% endif %}
+
+    {# THE HONEST VERSION OF A COST PREVIEW. `already_cached` is counted
+       from local files — no call, nothing spent — so this says what the
+       run will really buy instead of quoting the full price. And the
+       trade-off is stated rather than sold: a reused answer is a replay,
+       not a measurement of what that model does today. #}
+    <div class="checkline" style="margin: var(--sp-3) 0;">
+      <input id="use_cache" name="use_cache" type="checkbox"
+             {{ 'checked' if already_cached else '' }}>
+      <label for="use_cache" style="margin:0;">Reuse answers already bought
+        {% if already_cached %}
+        <span class="badge approved">{{ already_cached }} of {{ calls }} ready</span>
+        {% endif %}
+      </label>
+    </div>
+    <p class="hint" style="margin: 0 0 var(--sp-4);">
+      {% if already_cached %}
+      {{ already_cached }} generation call(s) already have a stored answer for this exact
+      prompt, input and model — ticking this buys {{ calls - already_cached }} instead of
+      {{ calls }}. Judge calls are reused the same way when the rubric hasn't changed, which
+      is what makes editing a rubric cheap to iterate on.
+      {% else %}
+      Nothing is cached for this feature yet, so this run buys everything either way. Tick it
+      anyway and the answers are stored, making the next run after a rubric edit nearly free.
+      {% endif %}
+      A reused answer is a <strong>replay</strong>, not a fresh measurement of what that model
+      does today — the run record says how many were, and the two noise checks (judge spread
+      and candidate spread) never read the cache, so they stay real.
+    </p>
+
     <button type="submit" class="btn btn-primary">Run {{ candidates|length }} candidate(s)</button>
   </form>
   {% else %}
@@ -54,5 +84,5 @@
 </div>
 
 <p class="muted">or from the CLI:
-  <code>python -m modelcicd.cli run --use-case {{ project.slug }}/use_cases/{{ name }}.yaml --project {{ project.slug }}{% if tier %} --tier {{ tier }}{% endif %}{% if limit %} --limit {{ limit }}{% endif %}</code></p>
+  <code>python -m modelcicd.cli run --use-case {{ project.slug }}/use_cases/{{ name }}.yaml --project {{ project.slug }}{% if tier %} --tier {{ tier }}{% endif %}{% if limit %} --limit {{ limit }}{% endif %} --cache</code></p>
 {% endblock %}

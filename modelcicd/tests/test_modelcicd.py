@@ -5,14 +5,15 @@ or produce a wrong promotion actually live. No model call, no network.
 """
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from modelcicd import (bench, catalogue, client, code_patch, code_scan, config,  # noqa: E402
-                       endpoint_client, guardrails, judge, project, rank, runner,
-                       sandbox, scheduler, secrets, state, wizard)
+from modelcicd import (bench, cache, catalogue, client, code_patch, code_scan,   # noqa: E402
+                       config, endpoint_client, guardrails, judge, project, rank,
+                       runner, sandbox, scheduler, secrets, state, wizard)
 
 FAILURES: list = []
 
@@ -593,7 +594,8 @@ def _fake_bench_result(model="vendor/winner", score=4.5) -> dict:
 def test_runner_does_not_renotify_for_an_unchanged_pending_candidate() -> None:
     import asyncio
 
-    async def fake_bench_run(candidates, uc, *, judge_model=None, provider_by_model=None):
+    async def fake_bench_run(candidates, uc, *, judge_model=None, provider_by_model=None,
+                             cache=None):
         return _fake_bench_result()
 
     async def fake_rejudge(*a, **k):
@@ -1252,6 +1254,300 @@ def test_dig_reads_a_nested_field() -> None:
         check("missing field raises", False)
     except KeyError:
         check("missing field raises", True)
+
+
+# ── cache: what it keys on, what it refuses to serve, and who must never
+#    be handed one ─────────────────────────────────────────────────────────
+
+class _FakeResponse:
+    def __init__(self, payload: dict, status: int = 200) -> None:
+        self.status_code = status
+        self._payload = payload
+
+    def json(self) -> dict:
+        return self._payload
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class _FakeHttpx:
+    """Just enough httpx for `client.call_json` — no socket, and it counts
+    how many times the network was actually reached, which is the only way
+    to prove a cache HIT skipped it."""
+    posts: list = []
+    content = '{"answer": "hello"}'
+    status = 200
+
+    class AsyncClient:
+        def __init__(self, *a, **k) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a) -> bool:
+            return False
+
+        async def post(self, url, **kwargs):
+            _FakeHttpx.posts.append({"url": url, **kwargs})
+            return _FakeResponse(
+                {"choices": [{"message": {"content": _FakeHttpx.content},
+                              "finish_reason": "stop"}]},
+                status=_FakeHttpx.status)
+
+
+class _NoNetwork:
+    """Installs the fake httpx and a dummy API key for the duration."""
+
+    def __init__(self, *, content: str = '{"answer": "hello"}', status: int = 200) -> None:
+        self.content, self.status = content, status
+
+    def __enter__(self):
+        import os
+        self._real = sys.modules.get("httpx")
+        sys.modules["httpx"] = _FakeHttpx
+        _FakeHttpx.posts = []
+        _FakeHttpx.content, _FakeHttpx.status = self.content, self.status
+        self._key = os.environ.get("OPENROUTER_API_KEY")
+        os.environ["OPENROUTER_API_KEY"] = "test-key"
+        return _FakeHttpx
+
+    def __exit__(self, *a) -> bool:
+        import os
+        if self._real is not None:
+            sys.modules["httpx"] = self._real
+        else:
+            sys.modules.pop("httpx", None)
+        if self._key is None:
+            os.environ.pop("OPENROUTER_API_KEY", None)
+        else:
+            os.environ["OPENROUTER_API_KEY"] = self._key
+        return False
+
+
+def _fp(**overrides) -> str:
+    base = {"model": "vendor/m", "prompt": "hi", "system": "be nice",
+            "temperature": 0.4, "max_tokens": 100,
+            "base_url": "https://example.com/v1", "required": ()}
+    base.update(overrides)
+    return cache.fingerprint(**base)
+
+
+def test_cache_key_covers_every_argument_that_changes_the_answer() -> None:
+    """The one failure mode of a cache that looks like a working cache: a key
+    missing a parameter, so it serves an answer to a different question."""
+    baseline = _fp()
+    check("stable for identical input", _fp() == baseline)
+    for field, value in [("model", "vendor/other"), ("prompt", "different"),
+                         ("system", "be terse"), ("temperature", 0.9),
+                         ("max_tokens", 200), ("base_url", "https://groq/v1"),
+                         ("required", ("scores",))]:
+        check(f"{field} changes the key", _fp(**{field: value}) != baseline)
+
+
+def test_cache_round_trips_a_value() -> None:
+    tmp = Path(tempfile.mkdtemp())
+    c = cache.Cache(tmp)
+    key = _fp()
+    check("miss before write", c.get(key) is None)
+    c.put(key, {"answer": "42"}, model="vendor/m")
+    check("hit after write", c.get(key) == {"answer": "42"})
+    check("counters tracked", (c.hits, c.misses, c.writes) == (1, 1, 1),
+          f"{c.stats()}")
+
+
+def test_cache_expires_entries_and_deletes_them() -> None:
+    """A model id is not a model — providers change the weights behind a
+    stable id, so a month-old answer is not necessarily that id's answer."""
+    import json as json_module
+    tmp = Path(tempfile.mkdtemp())
+    c = cache.Cache(tmp, ttl_days=7)
+    key = _fp()
+    c.put(key, {"answer": "old"})
+    path = c._path(key)
+    entry = json_module.loads(path.read_text(encoding="utf-8"))
+    entry["savedAt"] = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+    path.write_text(json_module.dumps(entry), encoding="utf-8")
+    check("stale entry is a miss", c.get(key) is None)
+    check("stale entry is removed", not path.exists())
+
+
+def test_cache_treats_a_corrupt_entry_as_a_miss_and_never_raises() -> None:
+    """A cache must not be able to break a run — a half-written file is a
+    miss, not a traceback in the middle of a forty-candidate bench."""
+    tmp = Path(tempfile.mkdtemp())
+    c = cache.Cache(tmp)
+    key = _fp()
+    path = c._path(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"schema": 1, "savedAt": "2026', encoding="utf-8")   # truncated
+    check("corrupt entry is a miss", c.get(key) is None)
+    check("corrupt entry is removed", not path.exists())
+
+
+def test_cache_rejects_an_entry_from_an_older_schema() -> None:
+    import json as json_module
+    tmp = Path(tempfile.mkdtemp())
+    c = cache.Cache(tmp)
+    key = _fp()
+    path = c._path(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json_module.dumps(
+        {"schema": cache.SCHEMA - 1, "savedAt": datetime.now(timezone.utc).isoformat(),
+         "value": {"answer": "from an older format"}}), encoding="utf-8")
+    check("old schema is a miss", c.get(key) is None)
+
+
+def test_call_json_serves_a_hit_without_touching_the_network() -> None:
+    import asyncio
+    tmp = Path(tempfile.mkdtemp())
+    c = cache.Cache(tmp)
+    with _NoNetwork() as fake:
+        kwargs = dict(model="vendor/m", label="t", system="be nice",
+                      temperature=0.4, max_tokens=100)
+        first = asyncio.run(client.call_json("hi", cache=c, **kwargs))
+        check("first call went to the network", len(fake.posts) == 1, f"{len(fake.posts)}")
+        second = asyncio.run(client.call_json("hi", cache=c, **kwargs))
+        check("second call did NOT", len(fake.posts) == 1, f"{len(fake.posts)}")
+    check("same answer both times", first == second == {"answer": "hello"})
+
+
+def test_call_json_without_a_cache_always_calls() -> None:
+    """The default must be byte-for-byte today's behavior."""
+    import asyncio
+    with _NoNetwork() as fake:
+        for _ in range(2):
+            asyncio.run(client.call_json("hi", model="vendor/m", label="t"))
+        check("no cache means no reuse", len(fake.posts) == 2, f"{len(fake.posts)}")
+
+
+def test_call_json_never_caches_a_failure() -> None:
+    """A failure is a fact about one moment, not about the model. Caching one
+    would pin a candidate to a bad afternoon for the whole TTL."""
+    import asyncio
+    tmp = Path(tempfile.mkdtemp())
+    c = cache.Cache(tmp)
+    with _NoNetwork(content="not json at all"):
+        try:
+            asyncio.run(client.call_json("hi", model="vendor/m", label="t",
+                                         cache=c, attempts=1))
+            check("a parse failure raises", False)
+        except RuntimeError:
+            check("a parse failure raises", True)
+    check("nothing was stored", c.writes == 0, f"{c.writes}")
+    check("no entry on disk", not any(tmp.rglob("*.json")))
+
+
+def test_call_json_never_caches_a_response_missing_required_keys() -> None:
+    import asyncio
+    tmp = Path(tempfile.mkdtemp())
+    c = cache.Cache(tmp)
+    with _NoNetwork(content='{"reasons": {}}'):
+        try:
+            asyncio.run(client.call_json("hi", model="vendor/m", label="t",
+                                         required=("scores",), cache=c, attempts=1))
+            check("a missing required key raises", False)
+        except RuntimeError:
+            check("a missing required key raises", True)
+    check("nothing was stored", c.writes == 0, f"{c.writes}")
+
+
+def test_cost_preview_agrees_with_what_the_run_will_actually_reuse() -> None:
+    """THE DRIFT GUARD. `run_form` promises "N already cached" from
+    `sandbox.cached_count`; the run itself buys whatever `run_one` misses on.
+    Built from different parameters, the preview would quietly lie about
+    money. This runs one real (fake-transport) generation call, then asks the
+    preview — end to end, without the test knowing the fingerprint itself."""
+    import asyncio
+    tmp = Path(tempfile.mkdtemp())
+    c = cache.Cache(tmp)
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+    tc = uc.test_cases[0]
+    check("preview says nothing is cached yet",
+          sandbox.cached_count(["vendor/m"], uc, c) == 0)
+    with _NoNetwork():
+        outcome = asyncio.run(sandbox.run_one("vendor/m", uc, tc, cache=c))
+    check("the call succeeded", outcome["status"] == "ok", f"{outcome}")
+    counted = sandbox.cached_count(["vendor/m"], uc, c)
+    check("preview now counts exactly that one call", counted == 1, f"{counted}")
+
+
+def test_cost_preview_does_not_pollute_the_runs_cache_accounting() -> None:
+    """A preview reads the cache; the run file records how much of the RUN
+    was replayed. If the preview's lookups counted, the run would over-report
+    replays it never made."""
+    tmp = Path(tempfile.mkdtemp())
+    c = cache.Cache(tmp)
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+    c.put(_fp(), {"answer": "x"})
+    sandbox.cached_count(["vendor/m"], uc, c)
+    check("hit/miss counters reset after a preview", (c.hits, c.misses) == (0, 0),
+          f"{c.stats()}")
+
+
+def test_the_two_noise_measurements_cannot_be_handed_a_cache() -> None:
+    """THE ONE THAT MATTERS MOST. Both of these measure how far apart two
+    IDENTICAL calls land. Served from a cache, every repeat returns the first
+    answer, the spread comes out as exactly 0.00, and the leaderboard prints
+    "no measurable noise" about a check that never ran. They must not accept
+    the parameter at all, so it can't be threaded through by accident."""
+    import inspect
+    for fn, where in [(judge.score_repeated, "judge.score_repeated"),
+                      (bench.resample_candidates_for_spread,
+                       "bench.resample_candidates_for_spread")]:
+        params = inspect.signature(fn).parameters
+        check(f"{where} takes no cache parameter", "cache" not in params,
+              f"{list(params)}")
+
+
+def test_bench_records_whether_answers_were_replayed_or_measured() -> None:
+    """A run built partly from replays is different evidence from one where
+    every answer was bought, and the trend chart compares them side by side.
+    The distinction has to survive into the saved file."""
+    import asyncio
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+
+    async def fake_call_json(*a, **k):
+        return {"reply": "ok", "scores": {c.id: 4 for c in uc.rubric}}
+
+    tmp = Path(tempfile.mkdtemp())
+    c = cache.Cache(tmp)
+    original = client.call_json
+    sandbox.client_module.call_json = fake_call_json
+    judge.client_module.call_json = fake_call_json
+    try:
+        with_cache = asyncio.run(bench.run(["vendor/a"], uc, judge_model="judge/j", cache=c))
+        without = asyncio.run(bench.run(["vendor/a"], uc, judge_model="judge/j"))
+    finally:
+        sandbox.client_module.call_json = original
+        judge.client_module.call_json = original
+    check("a cached run reports its stats", isinstance(with_cache.get("cacheStats"), dict),
+          f"{with_cache.get('cacheStats')}")
+    check("an uncached run reports None, not zeros",
+          without.get("cacheStats") is None, f"{without.get('cacheStats')}")
+
+
+def test_cache_clear_stale_keeps_what_a_run_would_still_reuse() -> None:
+    import json as json_module
+    tmp = Path(tempfile.mkdtemp())
+    c = cache.Cache(tmp, ttl_days=7)
+    fresh, old = _fp(prompt="fresh"), _fp(prompt="old")
+    c.put(fresh, {"answer": "keep me"})
+    c.put(old, {"answer": "drop me"})
+    path = c._path(old)
+    entry = json_module.loads(path.read_text(encoding="utf-8"))
+    entry["savedAt"] = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    path.write_text(json_module.dumps(entry), encoding="utf-8")
+
+    info = cache.describe(tmp, ttl_days=7)
+    check("describe counts both", info["entries"] == 2, f"{info}")
+    check("describe counts the stale one", info["stale"] == 1, f"{info}")
+    removed = cache.clear(tmp, stale_only=True, ttl_days=7)
+    check("only the stale one went", removed == 1, f"{removed}")
+    check("the reusable one survived", c.get(fresh) == {"answer": "keep me"})
+    check("clear-all removes the rest", cache.clear(tmp) == 1)
 
 
 # ── dashboard: bulk-create never saves silently, never saves partially ──────

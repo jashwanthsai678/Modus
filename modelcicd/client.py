@@ -41,7 +41,8 @@ async def call_json(prompt: str, *, model: str, label: str,
                     api_key_env: str = "OPENROUTER_API_KEY",
                     system: Optional[str] = None, required: tuple = (),
                     temperature: float = 0.4, max_tokens: int = 1500,
-                    attempts: int = 3, timeout_s: float = 60.0) -> dict:
+                    attempts: int = 3, timeout_s: float = 60.0,
+                    cache=None) -> dict:
     """One JSON-returning call. Raises with the label attached on final failure.
 
     RETRIED WITH THE ERROR SHOWN BACK. A parse failure is a normal event on a
@@ -56,8 +57,29 @@ async def call_json(prompt: str, *, model: str, label: str,
     platform a candidate came from (`sandbox.py`) resolves the URL and key
     env var itself and passes them in; every default here reproduces exactly
     what this function always did — OpenRouter, `OPENROUTER_API_KEY`.
+
+    `cache` IS DUCK-TYPED, FOR THE SAME REASON. Anything exposing
+    `fingerprint(**kwargs) -> str`, `get(key)` and `put(key, value,
+    model=...)` works — `modelcicd/cache.py` is one such thing, but this
+    file does not import it, so dropping this module into another repo
+    still needs nothing but httpx. `None`, the default, is exactly the
+    behavior this function has always had: every call goes to the network.
+
+    ONLY A SUCCESS IS EVER STORED. The write below sits after the `required`
+    check on the one path that returns — a rate limit, a parse failure, a
+    timeout, an HTTP error all leave the cache untouched and get retried on
+    the next run. Caching a failure would pin a candidate to a bad afternoon.
     """
     import httpx
+
+    cache_key = None
+    if cache is not None:
+        cache_key = cache.fingerprint(
+            model=model, prompt=prompt, system=system, temperature=temperature,
+            max_tokens=max_tokens, base_url=base_url, required=tuple(required))
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
 
     api_key = (os.environ.get(api_key_env) or "").strip()
     if not api_key:
@@ -93,6 +115,8 @@ async def call_json(prompt: str, *, model: str, label: str,
                 missing = [k for k in required if k not in data]
                 if missing:
                     raise ValueError(f"missing required key(s): {missing}")
+                if cache is not None and cache_key:
+                    cache.put(cache_key, data, model=model)
                 return data
             except RateLimitedError:
                 # Fail fast — retrying immediately just hits the same limit

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import bench as bench_module
+from . import cache as cache_module
 from . import catalogue as catalogue_module
 from . import guardrails as guardrails_module
 from . import notify as notify_module
@@ -58,7 +59,9 @@ def select_candidates(uc: UseCase, cat: dict, *, providers: Optional[list] = Non
 async def execute(uc: UseCase, cat: dict, candidates: list, *,
                   state_root: Optional[Path] = None,
                   out_dir: Optional[Path] = None,
-                  resample_candidates: bool = False) -> dict:
+                  resample_candidates: bool = False,
+                  use_cache: bool = False,
+                  cache_root: Optional[Path] = None) -> dict:
     """Runs the bench, ranks it, deepens judging on just the tie zone,
     saves the run file, records state, and notifies if a candidate is
     pending AND hasn't already been notified about. Returns everything a
@@ -69,9 +72,25 @@ async def execute(uc: UseCase, cat: dict, candidates: list, *,
     the tie-zone shortlist a few more times each, to surface CANDIDATE-side
     noise on top of the judge-side noise `rejudge_for_spread` already
     always checks. Off by default — unlike judge-spread, this spends real
-    extra generation calls, so it's never turned on silently."""
+    extra generation calls, so it's never turned on silently.
+
+    `use_cache` REUSES ANSWERS ALREADY BOUGHT, and is off by default for
+    the mirror-image reason. A cached run is cheap but it is a REPLAY: the
+    same rubric edit iterated ten times costs one set of generation calls
+    instead of ten, which is the point, but a run whose answers came from
+    last week is not a fresh measurement of what those models do today.
+    Off by default means the number on the leaderboard is a measurement
+    unless someone deliberately asked for a replay — and `cacheStats` in
+    the saved run file records which it was either way.
+
+    The cache object is created HERE, per run, and passed down — never a
+    module-level switch. The dashboard runs benches in worker threads, and
+    two concurrent runs (one replaying, one measuring) must not be able to
+    reach into each other's setting."""
+    cache = cache_module.Cache(cache_root) if use_cache else None
     result = await bench_module.run(
-        candidates, uc, provider_by_model=catalogue_module.provider_map(cat))
+        candidates, uc, provider_by_model=catalogue_module.provider_map(cat),
+        cache=cache)
 
     state = state_module.load(uc.name, state_root)
     board = rank_module.build(result, cat, approved_model=state.get("approvedModel"),
@@ -116,4 +135,5 @@ async def execute(uc: UseCase, cat: dict, candidates: list, *,
                 state_module.mark_notified(uc.name, pending_model, root=state_root)
 
     return {"stamp": stamp, "board": board, "state": new_state, "report": text,
-            "out_path": out_path, "notified": notified}
+            "out_path": out_path, "notified": notified,
+            "cache_stats": result.get("cacheStats")}

@@ -266,6 +266,7 @@ under two different names was its own small source of confusion.
 | `approve [--use-case <path> \| --use-case-name <name>] [--model <id>] [--project <slug>]` | free | Promotes a model — the only thing that changes `resolve()` |
 | `reject [--use-case <path> \| --use-case-name <name>] [--project <slug>]` | free | Dismisses the pending candidate — never changes `resolve()` |
 | `pending` | free | Everything waiting for review, across every project |
+| `cache [--clear-stale \| --clear-all]` | free | Inspects or reclaims the cached model responses |
 | `scheduler run-due` | **$** | Runs every AI feature that's due right now, once, and exits |
 | `scheduler serve [--interval-minutes <n>]` | **$** | Loops forever, re-checking every AI feature's schedule |
 | `ui [--host <addr>] [--port <n>]` | free | Launches the local dashboard at `http://127.0.0.1:5000` |
@@ -278,6 +279,46 @@ jobs — a `scheduler` run always behaves as if `--yes` was passed, since
 nobody is there to answer). If installed with `pip install -e .`, every
 command above also works as `modelcicd <command>` instead of
 `python -m modelcicd.cli <command>`.
+
+---
+
+## Response caching — so iterating on a rubric doesn't re-buy the answers
+
+Changing a rubric changes how answers are **scored**, not what the answers
+**are**. Without a cache, fixing one word in one criterion re-generates every
+candidate's answer to every test case — the expensive half of a run — to
+arrive at the same answers it already had.
+
+```bash
+python -m modelcicd.cli run --use-case ... --cache   # reuse what's already bought
+python -m modelcicd.cli cache                        # how much is stored, how much is stale
+python -m modelcicd.cli cache --clear-stale          # reclaim only the expired entries
+```
+
+In the dashboard it's a checkbox on the run form, and the cost preview counts
+the ready answers from local files first, so it quotes what the run will
+actually buy rather than the full price.
+
+**Off by default, and recorded when it's on.** A reused answer is a *replay*,
+not a fresh measurement of what that model does today, so the run's own file
+carries `cacheStats` — how many of its calls were replays — and the CLI and
+dashboard both say so afterward. A trend chart that compares a replayed run
+to a measured one at least can't do it silently.
+
+Keyed on every argument that reaches the model: model id, the test-case
+input, the system prompt, temperature, max tokens, and the endpoint URL (the
+same id on two marketplaces is two deployments). Edit the prompt or the
+rubric and you miss the cache, which is the correct answer. Entries expire
+after 14 days, because a provider can change the weights behind a stable id.
+
+**Failures are never cached, and the two noise checks never read it.**
+A rate limit or a parse failure is a fact about one moment, not about the
+model. And `judge.score_repeated` and `bench.resample_candidates_for_spread`
+measure how far apart two *identical* calls land — served from a cache, every
+repeat would return the first answer and the spread would come out as exactly
+`0.00`, reading as a rock-steady model. Neither function accepts a cache
+parameter at all, so it can't be passed by accident, and a test asserts that
+stays true.
 
 ---
 
@@ -337,6 +378,7 @@ modelcicd/
   config.py          load and validate a use_case.yaml (incl. endpoint/schedule/codeTarget blocks)
   client.py          the one place this project calls a CANDIDATE model — standalone, endpoint/key are parameters
   secrets.py         the one place this project writes an API key (into .env, nowhere new)
+  cache.py           content-addressed model responses, so a rubric edit doesn't re-buy the answers
   endpoint_client.py the one place this project calls a use case's OWN live endpoint
   sandbox.py         run one candidate (through ITS OWN platform) or the live endpoint, against the test cases
   judge.py           blind, pinned-judge scoring against the use case's rubric

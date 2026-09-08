@@ -75,10 +75,15 @@ def _rubric_block(criteria: list) -> str:
 
 
 async def score_one(model_id: str, judge_model: str, uc: UseCase, tc: TestCase,
-                    output: str) -> dict:
+                    output: str, *, cache=None) -> dict:
     """One judged answer. Returns {weighted, scores, reasons, wouldShip} or a
     failure dict — a failed judgement is recorded, not raised, so one bad call
-    does not lose the whole candidate's leaderboard row."""
+    does not lose the whole candidate's leaderboard row.
+
+    `cache` KEYS ON THE RENDERED PROMPT, which contains the rubric verbatim —
+    so editing a criterion misses the cache and re-judges, which is correct,
+    while re-running an unchanged run is free. Never passed by
+    `score_repeated` below."""
     criteria = tc.rubric or uc.rubric
     reference_block = (f"\nA REFERENCE ANSWER, for comparison only — the model's "
                        f"answer need not match it word for word:\n{tc.reference}\n"
@@ -92,7 +97,7 @@ async def score_one(model_id: str, judge_model: str, uc: UseCase, tc: TestCase,
     try:
         data = await client_module.call_json(
             prompt, model=judge_model, label=f"judge[{model_id}:{tc.id}]",
-            required=("scores",), temperature=0.1, max_tokens=1200)
+            required=("scores",), temperature=0.1, max_tokens=1200, cache=cache)
     except Exception as exc:                        # noqa: BLE001
         return {"testCase": tc.id, "status": "judge_failed", "error": str(exc)[:300]}
 
@@ -117,7 +122,14 @@ async def score_repeated(model_id: str, judge_model: str, uc: UseCase, tc: TestC
     samples once per test case via `bench.py`. A close call between two
     candidates can look like a confident tie on a single sample even when
     the judge itself isn't consistent about it; this is what would show
-    that, without spending anything extra on the candidates themselves."""
+    that, without spending anything extra on the candidates themselves.
+
+    TAKES NO `cache` PARAMETER, ON PURPOSE — and must never grow one. Every
+    call below is byte-for-byte identical to the last; the whole measurement
+    IS how much the result moves anyway. Served from a cache, all `repeats`
+    would return the first response, the spread would be exactly 0.0, and
+    the leaderboard would print "no judge noise" about a check that never
+    ran. A silent zero is worse than no number at all."""
     results = [await score_one(model_id, judge_model, uc, tc, output) for _ in range(repeats)]
     scored = [r["weighted"] for r in results if r.get("status") == "ok"]
     if not scored:

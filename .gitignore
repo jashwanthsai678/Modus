@@ -5,6 +5,7 @@ __pycache__/
 out/
 state/
 projects/
+cache/
 *.egg-info/
 build/
 dist/

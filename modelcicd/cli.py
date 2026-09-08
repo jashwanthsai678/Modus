@@ -49,10 +49,10 @@ try:
 except ImportError:
     pass
 
-from modelcicd import (catalogue as catalogue_module, config as config_module,   # noqa: E402
-                       guardrails as guardrails_module, onboarding as onboarding_module,
-                       project as project_module, runner as runner_module,
-                       state as state_module)
+from modelcicd import (cache as cache_module, catalogue as catalogue_module,     # noqa: E402
+                       config as config_module, guardrails as guardrails_module,
+                       onboarding as onboarding_module, project as project_module,
+                       runner as runner_module, state as state_module)
 
 OUT = _ROOT / "out"
 CATALOGUE_PATH = OUT / "catalogue.json"
@@ -395,6 +395,11 @@ def cmd_run(args) -> int:
     print(f"\ncandidates : {len(candidates)}")
     print(f"cost       : {len(candidates) * len(uc.test_cases)} generation "
           f"call(s) + {len(candidates) * len(uc.test_cases)} judge call(s)")
+    if args.cache:
+        print("           — MINUS whatever is already cached from an earlier run "
+              "with this same prompt, input, and rubric. Answers reused this way "
+              "are a REPLAY, not a fresh measurement; the saved run file records "
+              "how many were.")
     for c in candidates[:12]:
         print(f"   {c}")
     if len(candidates) > 12:
@@ -418,13 +423,19 @@ def cmd_run(args) -> int:
     try:
         result = asyncio.run(runner_module.execute(
             uc, cat, candidates, state_root=_state_root(args), out_dir=_out_dir(args),
-            resample_candidates=args.resample_shortlist))
+            resample_candidates=args.resample_shortlist, use_cache=args.cache))
     except Exception as exc:                        # noqa: BLE001
         print(f"\nrefused or failed: {exc}")
         return 3
 
     print()
     print(result["report"])
+
+    stats = result.get("cache_stats")
+    if stats and stats.get("hits"):
+        print(f"\ncache: {stats['hits']} of {stats['hits'] + stats['misses']} call(s) "
+              f"were REPLAYED from an earlier run, not measured now "
+              f"({stats['hitRate']:.0%} hit rate).")
 
     pending = result["state"].get("pending")
     if pending:
@@ -598,6 +609,51 @@ def cmd_apply_code_patch(args) -> int:
     return 0
 
 
+def cmd_cache(args) -> int:
+    """What's cached, and how to reclaim it.
+
+    --clear-stale IS THE ONE TO REACH FOR. It drops only entries past their
+    TTL — the ones a `--cache` run would refuse to use anyway — so it costs
+    nothing. --clear-all throws away answers a rubric edit is about to
+    reuse, which is exactly the money the cache exists to save, so it says
+    what it's about to delete and asks."""
+    if args.clear_stale and args.clear_all:
+        print("pick one: --clear-stale or --clear-all.")
+        return 2
+
+    info = cache_module.describe()
+    print(f"\nroot     {info['root']}")
+    print(f"entries  {info['entries']}")
+    print(f"stale    {info['stale']}  (older than {cache_module.DEFAULT_TTL_DAYS} days — "
+          f"a --cache run treats these as a miss anyway)")
+    print(f"size     {info['bytes'] / 1024:.1f} KiB")
+
+    if args.clear_stale:
+        removed = cache_module.clear(stale_only=True)
+        print(f"\nremoved {removed} stale entry(ies). Nothing reusable was touched.")
+        return 0
+
+    if args.clear_all:
+        if not info["entries"]:
+            print("\nnothing to clear.")
+            return 0
+        print(f"\n--clear-all deletes all {info['entries']} entry(ies), including "
+              f"{info['entries'] - info['stale']} still reusable. The next --cache run "
+              f"re-buys those answers with real calls.")
+        try:
+            reply = input("proceed? [y/N] ").strip().lower()
+        except EOFError:
+            reply = "n"
+        if reply not in ("y", "yes"):
+            print("nothing was cleared.")
+            return 1
+        print(f"removed {cache_module.clear()} entry(ies).")
+        return 0
+
+    print("\n--clear-stale to reclaim the expired ones, --clear-all to drop everything.")
+    return 0
+
+
 def cmd_scheduler_run_due(args) -> int:
     from . import scheduler as scheduler_module
     ran = scheduler_module.run_due()
@@ -714,8 +770,20 @@ def build_parser() -> argparse.ArgumentParser:
                         "re-score the same answer) to check candidate-side variance, "
                         "not just judge-side. Spends real extra generation calls — "
                         "off by default.")
+    r.add_argument("--cache", action="store_true",
+                   help="reuse answers already bought for this exact prompt, input, "
+                        "and rubric instead of re-buying them — what makes iterating "
+                        "on a rubric nearly free. Off by default: a replayed answer "
+                        "is not a fresh measurement of what that model does today. "
+                        "The saved run file records how many calls were replays.")
     r.add_argument("--project", default=None,
                   help="scope state/out and candidate providers to this connected project")
+
+    ca = sub.add_parser("cache", help="inspect or clear the cached model responses")
+    ca.add_argument("--clear-stale", action="store_true",
+                    help=f"delete entries older than {cache_module.DEFAULT_TTL_DAYS} days")
+    ca.add_argument("--clear-all", action="store_true",
+                    help="delete every cached response (the next --cache run re-buys them)")
 
     s = sub.add_parser("status", help="what is approved and what is pending")
     s.add_argument("--use-case", "--feature", dest="use_case", default=None)
@@ -765,7 +833,8 @@ def main() -> int:
             "wizard": cmd_wizard, "scan-repo": cmd_scan_repo, "shortlist": cmd_shortlist,
             "run": cmd_run, "status": cmd_status, "approve": cmd_approve,
             "reject": cmd_reject, "pending": cmd_pending,
-            "apply-code-patch": cmd_apply_code_patch, "ui": cmd_ui}[args.command](args)
+            "apply-code-patch": cmd_apply_code_patch, "cache": cmd_cache,
+            "ui": cmd_ui}[args.command](args)
 
 
 if __name__ == "__main__":

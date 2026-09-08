@@ -837,10 +837,20 @@ def create_app() -> Flask:
         uc = config_module.load(uc_path)
         tier = request.args.get("tier") or "free"
         limit = request.args.get("limit", type=int)
-        _, candidates = _run_candidates(uc, proj, tier=tier, limit=limit)
+        cat, candidates = _run_candidates(uc, proj, tier=tier, limit=limit)
+        # WHAT THE CACHE WOULD ACTUALLY SAVE, counted from local files — no
+        # call, nothing spent. A cost preview that quotes the full price
+        # while half of it is already paid for is worse than no preview.
+        from . import cache as cache_module
+        from . import catalogue as catalogue_module
+        from . import sandbox as sandbox_module
+        already_cached = sandbox_module.cached_count(
+            candidates, uc, cache_module.Cache(),
+            provider_by_model=catalogue_module.provider_map(cat))
         return render_template("run_form.html", project=proj, name=name, uc=uc,
                               candidates=candidates, tier=tier, limit=limit,
-                              tiers=uc.guardrails.tiers, error=request.args.get("error"))
+                              tiers=uc.guardrails.tiers, error=request.args.get("error"),
+                              already_cached=already_cached)
 
     @app.route("/projects/<project>/usecase/<path:name>/run", methods=["POST"])
     def run_execute(project, name):
@@ -860,15 +870,23 @@ def create_app() -> Flask:
                                        error="no candidates survived the guardrails "
                                              "for that tier/limit — nothing to run"),
                             code=303)
+        use_cache = request.form.get("use_cache") == "on"
         try:
             result = asyncio.run(runner_module.execute(
                 uc, cat, candidates, state_root=project_module.state_dir(project),
-                out_dir=project_module.out_dir(project)))
+                out_dir=project_module.out_dir(project), use_cache=use_cache))
         except Exception as exc:                        # noqa: BLE001
             return redirect(url_for("run_form", project=project, name=name,
                                     tier=tier, limit=limit, error=str(exc)), code=303)
         pending = (result.get("state") or {}).get("pending")
         flash = f"benched {len(candidates)} candidate(s)"
+        stats = result.get("cache_stats")
+        if stats and stats.get("hits"):
+            # SAID OUT LOUD, not buried in the run file. A person who ticked
+            # "reuse cached answers" should be told how much of the result
+            # they're looking at was replayed rather than measured.
+            flash += (f" ({stats['hits']} of {stats['hits'] + stats['misses']} call(s) "
+                      f"replayed from cache, not measured now)")
         if pending:
             flash += f" — {pending['model']} is now pending review"
         return redirect(scoped_url("usecase", project=project, name=name, ran=flash), code=303)

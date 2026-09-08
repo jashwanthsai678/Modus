@@ -18,7 +18,7 @@ JUDGE_CONCURRENCY = 6
 
 
 async def _judge_candidate(model_id: str, sandboxed: dict, judge_model: str,
-                           uc: UseCase) -> dict:
+                           uc: UseCase, *, cache=None) -> dict:
     by_id = {tc.id: tc for tc in uc.test_cases}
     gate = asyncio.Semaphore(JUDGE_CONCURRENCY)
 
@@ -29,7 +29,7 @@ async def _judge_candidate(model_id: str, sandboxed: dict, judge_model: str,
             return {**entry,
                     **await judge_module.score_one(
                         model_id, judge_model, uc, by_id[entry["testCase"]],
-                        entry["output"])}
+                        entry["output"], cache=cache)}
 
     judged = await asyncio.gather(*(one(e) for e in sandboxed["results"]))
     scored = [j for j in judged if j.get("status") == "ok"]
@@ -48,7 +48,7 @@ async def _judge_candidate(model_id: str, sandboxed: dict, judge_model: str,
 
 
 async def run(candidates: list, uc: UseCase, *, judge_model: Optional[str] = None,
-             provider_by_model: Optional[dict] = None) -> dict:
+             provider_by_model: Optional[dict] = None, cache=None) -> dict:
     """Every candidate: every test case answered, then every answer judged.
 
     EACH CANDIDATE IS CALLED THROUGH WHICHEVER PLATFORM IT ACTUALLY CAME
@@ -62,7 +62,17 @@ async def run(candidates: list, uc: UseCase, *, judge_model: Optional[str] = Non
     test-case inputs, same judge, same rubric — so the leaderboard shows what
     the use case's own application returns RIGHT NOW next to every candidate.
     It is a baseline capture, never a candidate: excluded from the
-    judge-is-a-candidate clash check below, and never itself benchmarked."""
+    judge-is-a-candidate clash check below, and never itself benchmarked.
+
+    `cache`, WHEN GIVEN, IS RECORDED IN THE RESULT — not just used. A run
+    whose answers were replayed from a previous run's cache is a different
+    kind of evidence from one where every answer was bought fresh, and the
+    trend chart compares them side by side. `cacheStats` in the returned
+    dict says how many of this run's calls were replays, so that
+    distinction survives into the saved run file instead of living only in
+    whoever remembered ticking the box. The LIVE endpoint baseline is
+    deliberately never cached: its whole purpose is to capture what the
+    application returns RIGHT NOW."""
     judge_model = judge_model or uc.judge_model
     judge_module.check_judge_not_candidate(judge_model, candidates)
 
@@ -71,13 +81,14 @@ async def run(candidates: list, uc: UseCase, *, judge_model: Optional[str] = Non
     async def one_candidate(model_id: str) -> dict:
         provider = (provider_by_model or {}).get(model_id, "openrouter")
         async with gate:
-            sandboxed = await sandbox_module.run_candidate(model_id, uc, provider=provider)
-        return await _judge_candidate(model_id, sandboxed, judge_model, uc)
+            sandboxed = await sandbox_module.run_candidate(
+                model_id, uc, provider=provider, cache=cache)
+        return await _judge_candidate(model_id, sandboxed, judge_model, uc, cache=cache)
 
     async def one_endpoint() -> dict:
         sandboxed = await sandbox_module.run_endpoint_candidate(uc)
         return await _judge_candidate(sandbox_module.ENDPOINT_LABEL, sandboxed,
-                                      judge_model, uc)
+                                      judge_model, uc, cache=cache)
 
     tasks = [one_candidate(m) for m in candidates]
     if uc.endpoint:
@@ -88,6 +99,7 @@ async def run(candidates: list, uc: UseCase, *, judge_model: Optional[str] = Non
         "schema": 1, "ranAt": datetime.now(timezone.utc).isoformat(),
         "useCase": uc.name, "judge": judge_model,
         "testCases": len(uc.test_cases), "candidates": len(candidates),
+        "cacheStats": cache.stats() if cache is not None else None,
         "results": list(results),
     }
 
@@ -145,6 +157,15 @@ async def resample_candidates_for_spread(uc: UseCase, model_ids: list, judge_mod
     `rejudge_for_spread`, it is never wired in automatically. A caller opts
     in explicitly, and even then only for a tie-zone shortlist a caller
     already identified, never the whole field.
+
+    TAKES NO `cache` PARAMETER, ON PURPOSE — and must never grow one, for
+    the same reason `judge.score_repeated` doesn't. This function's entire
+    measurement is how far apart two IDENTICAL calls land. Served from a
+    cache, every repeat would return the first answer, `max - min` would be
+    exactly 0.0, and the leaderboard would print "candidate spread: 0.00"
+    — reading as a rock-steady model — about a re-generation that never
+    happened. The calls below therefore pass no cache, and that is load-
+    bearing, not an omission.
 
     Returns {model_id: mean_spread}, same shape as `rejudge_for_spread`."""
     gate = asyncio.Semaphore(CANDIDATE_CONCURRENCY)

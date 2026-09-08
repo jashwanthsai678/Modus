@@ -31,18 +31,67 @@ def _provider_spec(provider: str) -> dict:
     return catalogue_module.PROVIDERS.get(provider) or catalogue_module.PROVIDERS["openrouter"]
 
 
-async def run_one(model_id: str, uc: UseCase, tc: TestCase, *,
-                  provider: str = "openrouter") -> dict:
-    """One candidate, one test case, one call — through WHICHEVER platform
-    this candidate actually came from, not always OpenRouter."""
+def _generation_call(model_id: str, uc: UseCase, tc: TestCase, provider: str) -> dict:
+    """Every argument that defines one generation call, in ONE place.
+
+    THE COST PREVIEW AND THE ACTUAL CALL MUST AGREE. `run_one` below makes
+    the call from this dict; `cached_count` fingerprints the same dict to
+    tell a person how many of a run's calls are already paid for. Built in
+    two places, they would drift the first time a parameter changed, and
+    the symptom would be a run form promising "28 already cached" and then
+    buying all 30 — a quiet lie about money, which is the one thing this
+    project's cost previews exist to avoid."""
     spec = _provider_spec(provider)
+    return {"prompt": tc.input, "model": model_id, "base_url": spec["chat_url"],
+            "system": uc.system_prompt, "required": (),
+            "temperature": 0.4, "max_tokens": uc.max_tokens}
+
+
+def cached_count(model_ids: list, uc: UseCase, cache, *,
+                 provider_by_model: Optional[dict] = None) -> int:
+    """How many of this run's generation calls a cache could already serve.
+
+    A LOCAL FILE CHECK, NOTHING SPENT. Reads the cache the same way the run
+    will, so `run_form`'s cost line can say what a `--cache` run will
+    actually buy rather than quoting the full price and being wrong."""
+    if cache is None:
+        return 0
+    hits = 0
+    for model_id in model_ids:
+        provider = (provider_by_model or {}).get(model_id, "openrouter")
+        for tc in uc.test_cases:
+            call = _generation_call(model_id, uc, tc, provider)
+            key = cache.fingerprint(
+                model=call["model"], prompt=call["prompt"], system=call["system"],
+                temperature=call["temperature"], max_tokens=call["max_tokens"],
+                base_url=call["base_url"], required=call["required"])
+            if cache.get(key) is not None:
+                hits += 1
+    # A preview must not be mistaken for the run itself in the run file's
+    # own cache accounting, so the counters it moved are rolled back.
+    cache.hits = cache.misses = 0
+    return hits
+
+
+async def run_one(model_id: str, uc: UseCase, tc: TestCase, *,
+                  provider: str = "openrouter", cache=None) -> dict:
+    """One candidate, one test case, one call — through WHICHEVER platform
+    this candidate actually came from, not always OpenRouter.
+
+    `cache`, when given, reuses this exact (model, prompt, system, input)
+    answer if it was already bought — the expensive half of a run, and the
+    half a rubric edit doesn't change. `None` (the default) always calls.
+    NOT PASSED by `bench.resample_candidates_for_spread`, which exists to
+    measure how much this call's answer MOVES between identical calls; a
+    cache would hand it the same answer every time and it would report a
+    spread of exactly zero. See `cache.py`."""
+    spec = _provider_spec(provider)
+    call = _generation_call(model_id, uc, tc, provider)
     started = datetime.now(timezone.utc)
     try:
         output = await client_module.call_json(
-            tc.input, model=model_id, label=f"sandbox[{model_id}:{tc.id}]",
-            base_url=spec["chat_url"], api_key_env=spec["key_env"],
-            system=uc.system_prompt, required=(),
-            temperature=0.4, max_tokens=uc.max_tokens)
+            call.pop("prompt"), label=f"sandbox[{model_id}:{tc.id}]",
+            api_key_env=spec["key_env"], cache=cache, **call)
     except client_module.RateLimitedError as exc:
         # A REAL, OBSERVED signal — this candidate hit a rate limit during
         # even a light bench. Recorded distinctly from a generic failure so
@@ -61,7 +110,7 @@ async def run_one(model_id: str, uc: UseCase, tc: TestCase, *,
 
 
 async def run_candidate(model_id: str, uc: UseCase, *,
-                        provider: str = "openrouter") -> dict:
+                        provider: str = "openrouter", cache=None) -> dict:
     """Every test case for one candidate, in sequence.
 
     Sequential, not concurrent, per candidate — this is a screening tool run
@@ -72,7 +121,7 @@ async def run_candidate(model_id: str, uc: UseCase, *,
     """
     results = []
     for tc in uc.test_cases:
-        results.append(await run_one(model_id, uc, tc, provider=provider))
+        results.append(await run_one(model_id, uc, tc, provider=provider, cache=cache))
     counts = {"ok": 0, "failed": 0, "rateLimited": 0}
     for r in results:
         counts["ok" if r["status"] == "ok" else
