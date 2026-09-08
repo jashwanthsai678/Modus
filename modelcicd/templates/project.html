@@ -16,6 +16,10 @@
   </p>
 </div>
 
+{% if created_flash %}
+<div class="card flash-success"><p style="margin:0;">{{ created_flash }}</p></div>
+{% endif %}
+
 {% set ns = namespace(found_current=false) %}
 <div class="stepper">
   <div class="step is-done">

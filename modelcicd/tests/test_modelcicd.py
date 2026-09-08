@@ -1254,6 +1254,130 @@ def test_dig_reads_a_nested_field() -> None:
         check("missing field raises", True)
 
 
+# ── dashboard: bulk-create never saves silently, never saves partially ──────
+#
+# THE REGRESSION THESE GUARD. bulk_create_save used to `continue` past any
+# feature that failed validation and then redirect as if it had worked — so
+# a project with an empty rubric saved nothing at all and said nothing. It
+# bit a real person twice in one session before it was found. No network
+# here: this route only validates form data and writes yaml.
+
+def _bulk_form(count: int, **overrides) -> dict:
+    """A bulk-create submission with `count` valid features, f0..fN."""
+    form = {"feature_count": str(count)}
+    for i in range(count):
+        form.update({f"f{i}_name": f"feature_{i}",
+                     f"f{i}_system_prompt": "You answer questions.",
+                     f"f{i}_tc_id": "tc1", f"f{i}_tc_input": "what is 2+2?",
+                     f"f{i}_tc_reference": "4"})
+    form.update(overrides)
+    return form
+
+
+def _bulk_client(rubric: list):
+    """A test client plus a project whose defaults carry `rubric`, both
+    rooted in a fresh tempdir so nothing touches the real projects/."""
+    from modelcicd import dashboard
+    tmp = Path(tempfile.mkdtemp())
+    original = project.DEFAULT_DIR
+    project.DEFAULT_DIR = tmp / "projects"
+    project.create("Bulk Test", slug="bulk-test", notify_email="test@example.com")
+    project.set_defaults("bulk-test", {"rubric": rubric})
+    app = dashboard.create_app()
+    app.config["TESTING"] = True
+    return app.test_client(), tmp, original
+
+
+def test_bulk_create_refuses_and_explains_when_the_rubric_is_empty() -> None:
+    client_, tmp, original = _bulk_client([])
+    try:
+        r = client_.post("/projects/bulk-test/scan/bulk-create/save", data=_bulk_form(1))
+        body = r.get_data(as_text=True)
+        check("empty rubric is refused, not redirected", r.status_code == 400,
+              f"got {r.status_code}")
+        check("refusal says nothing was saved", "Nothing was saved" in body)
+        check("refusal names the rubric as the reason", "rubric criterion" in body)
+        check("nothing written", project.list_use_cases("bulk-test") == [])
+        check("the person's edits survive", 'value="feature_0"' in body)
+    finally:
+        project.DEFAULT_DIR = original
+
+
+def test_bulk_create_writes_and_reports_the_count_when_valid() -> None:
+    client_, tmp, original = _bulk_client([{"id": "accuracy", "description": "is it right",
+                                            "weight": 1}])
+    try:
+        r = client_.post("/projects/bulk-test/scan/bulk-create/save", data=_bulk_form(2))
+        check("valid batch redirects", r.status_code == 303, f"got {r.status_code}")
+        check("redirect reports the count", "created+2" in r.headers["Location"]
+              or "created%202" in r.headers["Location"], r.headers["Location"])
+        names = {p.stem for p in project.list_use_cases("bulk-test")}
+        check("both written", names == {"feature_0", "feature_1"}, str(names))
+    finally:
+        project.DEFAULT_DIR = original
+
+
+def test_bulk_create_is_all_or_nothing_when_one_feature_is_invalid() -> None:
+    client_, tmp, original = _bulk_client([{"id": "accuracy", "description": "is it right",
+                                            "weight": 1}])
+    try:
+        # f1 has no test case at all — the exact draft that used to vanish
+        # on its own while its neighbour saved.
+        form = _bulk_form(2, f1_tc_id="", f1_tc_input="")
+        r = client_.post("/projects/bulk-test/scan/bulk-create/save", data=form)
+        check("partial batch is refused", r.status_code == 400, f"got {r.status_code}")
+        check("the valid neighbour was NOT written",
+              project.list_use_cases("bulk-test") == [])
+        check("the reason names test cases", "at least one test case"
+              in r.get_data(as_text=True))
+    finally:
+        project.DEFAULT_DIR = original
+
+
+def test_bulk_create_skip_lets_a_bad_draft_be_dropped_deliberately() -> None:
+    client_, tmp, original = _bulk_client([{"id": "accuracy", "description": "is it right",
+                                            "weight": 1}])
+    try:
+        form = _bulk_form(2, f1_tc_id="", f1_tc_input="", f1_skip="on")
+        r = client_.post("/projects/bulk-test/scan/bulk-create/save", data=form)
+        check("skipping the bad one lets the rest save", r.status_code == 303,
+              f"got {r.status_code}")
+        names = {p.stem for p in project.list_use_cases("bulk-test")}
+        check("only the kept one written", names == {"feature_0"}, str(names))
+    finally:
+        project.DEFAULT_DIR = original
+
+
+def test_bulk_create_refuses_to_overwrite_an_existing_feature() -> None:
+    client_, tmp, original = _bulk_client([{"id": "accuracy", "description": "is it right",
+                                            "weight": 1}])
+    try:
+        url = "/projects/bulk-test/scan/bulk-create/save"
+        client_.post(url, data=_bulk_form(1))
+        before = (project.use_cases_dir("bulk-test") / "feature_0.yaml").read_text(encoding="utf-8")
+        r = client_.post(url, data=_bulk_form(1, f0_system_prompt="TOTALLY DIFFERENT"))
+        check("a name collision is refused", r.status_code == 400, f"got {r.status_code}")
+        check("the collision is explained", "already exists" in r.get_data(as_text=True))
+        after = (project.use_cases_dir("bulk-test") / "feature_0.yaml").read_text(encoding="utf-8")
+        check("the existing feature is untouched", before == after)
+    finally:
+        project.DEFAULT_DIR = original
+
+
+def test_bulk_create_refuses_duplicate_names_inside_one_batch() -> None:
+    client_, tmp, original = _bulk_client([{"id": "accuracy", "description": "is it right",
+                                            "weight": 1}])
+    try:
+        form = _bulk_form(2, f1_name="feature_0")
+        r = client_.post("/projects/bulk-test/scan/bulk-create/save", data=form)
+        check("duplicate names in one batch refused", r.status_code == 400,
+              f"got {r.status_code}")
+        check("nothing written", project.list_use_cases("bulk-test") == [])
+        check("the duplicate is explained", "also named" in r.get_data(as_text=True))
+    finally:
+        project.DEFAULT_DIR = original
+
+
 def main() -> int:
     print("modelcicd\n")
     for name, fn in sorted(globals().items()):

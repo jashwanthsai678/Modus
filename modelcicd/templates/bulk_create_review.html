@@ -1,23 +1,52 @@
 {% extends "base.html" %}
 {% block title %}Review {{ fields_list|length }} feature(s) — {{ project.name }}{% endblock %}
 {% block content %}
-<p class="muted"><a class="link" href="{{ url_for('project_detail', slug=project.slug) }}">&larr; {{ project.name }}</a></p>
-<h1>Review before saving</h1>
-<p class="muted">Nothing is saved yet. Every name, prompt, and test case below is a draft — edit
-  anything, uncheck "skip this one" is off by default so a feature saves unless you tick
-  <strong>skip</strong> on it. All of them share the project's rubric/price/judge from
-  <a class="link" href="{{ url_for('project_defaults', slug=project.slug) }}">Project defaults</a> —
-  edit those separately if they're not right, then come back and re-draft.</p>
+<p class="crumb"><a class="link" href="{{ url_for('project_detail', slug=project.slug) }}">&larr; {{ project.name }}</a></p>
+<div class="page-head">
+  <h1>Review before saving</h1>
+  <p class="sub">Nothing is saved yet. Every name, prompt, and test case below is a draft — edit
+    anything. A feature saves unless you tick <strong>skip</strong> on it. All of them share the
+    project's rubric, price ceiling, and judge from
+    <a class="link" href="{{ url_for('project_defaults', slug=project.slug) }}">Project defaults</a>.</p>
+</div>
+
+{% if blocked_count %}
+{# THE FIX, THE VISIBLE HALF. Before this, a feature that failed validation
+   was silently dropped and the page redirected as if it had saved. Now
+   nothing at all is written until every feature is valid, and the reason
+   sits on the card it belongs to with the person's edits still in place. #}
+<div class="card flash-error">
+  <p style="margin:0;"><strong>Nothing was saved.</strong>
+    {{ blocked_count }} feature{{ 's' if blocked_count != 1 else '' }} below can't be created yet —
+    each one's reason is on its own card. Fix them, or tick <strong>skip</strong> on the ones you
+    don't want, then submit again. Your edits are preserved.</p>
+  {% if rubric_missing %}
+  <p style="margin:var(--sp-3) 0 0;">This project has no rubric, so <em>no</em> feature here can be
+    saved until you set one — <a class="link" href="{{ url_for('project_defaults', slug=project.slug) }}">set the project rubric</a>,
+    then come back to this page and submit again.</p>
+  {% endif %}
+</div>
+{% endif %}
 
 <form method="post" action="{{ url_for('bulk_create_save', slug=project.slug) }}">
   <input type="hidden" name="feature_count" value="{{ fields_list|length }}">
   {% for f in fields_list %}
   {% set outer_i = loop.index0 %}
+  {% set errors = errors_list[outer_i] if errors_list else [] %}
   <div class="card">
     <div class="checkline" style="float: right;">
-      <input id="f{{ outer_i }}_skip" name="f{{ outer_i }}_skip" type="checkbox">
+      <input id="f{{ outer_i }}_skip" name="f{{ outer_i }}_skip" type="checkbox"
+             {{ 'checked' if skipped_list and skipped_list[outer_i] else '' }}>
       <label for="f{{ outer_i }}_skip" style="margin:0;">skip this one</label>
     </div>
+
+    {% if errors %}
+    <div class="errors" style="margin-bottom:var(--sp-4);">
+      <strong>Can't create <span class="mono">{{ f.name or 'this feature' }}</span> yet:</strong>
+      <ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+
     <label for="f{{ outer_i }}_name">name <span class="hint">(used in resolve("name"))</span></label>
     <input id="f{{ outer_i }}_name" name="f{{ outer_i }}_name" type="text" value="{{ f.name }}">
 
@@ -52,8 +81,9 @@
 
     <h2 style="margin-top: 18px;">Test cases <span class="hint">drafted by {{ generation_model }} — check these before saving</span></h2>
     {% if not f.test_cases %}
-    <p class="muted">Nothing was drafted for this one — add at least one by hand below, or it'll
-      be skipped when you save (a feature needs at least one test case).</p>
+    <p class="muted">Nothing was drafted for this one — add at least one by hand below. A feature
+      needs at least one test case, so this won't save without one (tick <strong>skip</strong> if
+      you'd rather drop it).</p>
     {% endif %}
     {% for i in range(6) %}
     {% set tc = f.test_cases[i] if i < f.test_cases|length else None %}
@@ -79,6 +109,6 @@
   </div>
   {% endfor %}
 
-  <button type="submit" class="btn btn-primary">Create {{ fields_list|length }} AI feature(s)</button>
+  <button type="submit" class="btn btn-primary">Create {{ fields_list|length }} AI feature{{ 's' if fields_list|length != 1 else '' }}</button>
 </form>
 {% endblock %}

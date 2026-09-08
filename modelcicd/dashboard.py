@@ -246,7 +246,8 @@ def create_app() -> Flask:
         }
         return render_template("project.html", project=proj, cases=cases,
                               defined_not_run=sorted(defined_not_run),
-                              has_scan_results=has_scan_results, steps=steps)
+                              has_scan_results=has_scan_results, steps=steps,
+                              created_flash=request.args.get("created"))
 
     # ── Overview — everything about a project's features, in one place ──────
     #
@@ -461,8 +462,14 @@ def create_app() -> Flask:
             return redirect(url_for("scan_results", slug=slug), code=303)
         judge_model = proj.defaults.get("judgeModel") or config_module.DEFAULT_JUDGE_MODEL
         generation_model = proj.defaults.get("generationModel") or judge_model
+        # CHECKED BEFORE ANY MONEY IS SPENT, not after. A feature can't be
+        # saved without a rubric, so with an empty project rubric EVERY draft
+        # below would be generated (one paid call each) and then refused at
+        # the last step — which is exactly what happened to a real person
+        # before this check existed: drafts vanished with no explanation.
         return render_template("bulk_create.html", project=proj, candidates=candidates,
-                              generation_model=generation_model)
+                              generation_model=generation_model,
+                              rubric_missing=not (proj.defaults.get("rubric") or []))
 
     @app.route("/projects/<slug>/scan/bulk-create", methods=["POST"])
     def bulk_create_generate(slug):
@@ -518,7 +525,11 @@ def create_app() -> Flask:
             fields_list.append(f)
 
         return render_template("bulk_create_review.html", project=proj,
-                              fields_list=fields_list, generation_model=generation_model)
+                              fields_list=fields_list, generation_model=generation_model,
+                              errors_list=[[] for _ in fields_list],
+                              skipped_list=[False for _ in fields_list],
+                              blocked_count=0,
+                              rubric_missing=not (proj.defaults.get("rubric") or []))
 
     @app.route("/projects/<slug>/scan/bulk-create/save", methods=["POST"])
     def bulk_create_save(slug):
@@ -526,8 +537,16 @@ def create_app() -> Flask:
             proj = project_module.load(slug)
         except FileNotFoundError:
             abort(404, f"no project at {slug!r}")
+        from . import config as config_module
         count = int(request.form.get("feature_count") or 0)
-        written = []
+        # ALL-OR-NOTHING, AND NEVER SILENT. This route used to `continue`
+        # past any feature that failed validation and then redirect as if
+        # everything worked — so a project with an empty rubric saved
+        # nothing at all and said nothing about it. Now: every feature is
+        # validated FIRST, and if any one of them fails, none are written
+        # and the review page comes back with the person's own edits intact
+        # and the reason on the offending card.
+        entries = []
         for i in range(count):
             prefix = f"f{i}_"
             f = wizard_module.defaults_from_project(proj.defaults)
@@ -548,15 +567,51 @@ def create_app() -> Flask:
                 f.code_file, f.code_current_model = code_file, code_model
             f.input_structure = request.form.get(f"{prefix}input_structure", "").strip() or None
             f.output_structure = request.form.get(f"{prefix}output_structure", "").strip() or None
-            if request.form.get(f"{prefix}skip") == "on" or not f.name or not f.system_prompt.strip():
+            skipped = request.form.get(f"{prefix}skip") == "on"
+            entries.append({"fields": f, "skipped": skipped,
+                            "errors": [] if skipped else wizard_module.validate(f)})
+
+        # Name collisions are a validation failure too, not an overwrite. A
+        # drafted name matching a feature that already exists would silently
+        # replace someone's hand-edited use_case.yaml.
+        seen = set()
+        for e in entries:
+            if e["skipped"] or e["errors"]:
                 continue
-            errors = wizard_module.validate(f)
-            if errors:
+            name = e["fields"].name
+            if name in seen:
+                e["errors"].append(f"another feature in this batch is also named {name!r} — "
+                                   "rename one of them.")
+            elif (project_module.use_cases_dir(slug) / f"{name}.yaml").exists():
+                e["errors"].append(f"a feature named {name!r} already exists in this project — "
+                                   "rename this one, or skip it to keep the existing one.")
+            else:
+                seen.add(name)
+
+        blocked = sum(1 for e in entries if e["errors"])
+        if blocked:
+            judge_model = proj.defaults.get("judgeModel") or config_module.DEFAULT_JUDGE_MODEL
+            return render_template(
+                "bulk_create_review.html", project=proj,
+                fields_list=[e["fields"] for e in entries],
+                errors_list=[e["errors"] for e in entries],
+                skipped_list=[e["skipped"] for e in entries],
+                generation_model=proj.defaults.get("generationModel") or judge_model,
+                blocked_count=blocked,
+                rubric_missing=not (proj.defaults.get("rubric") or [])), 400
+
+        written = []
+        for e in entries:
+            if e["skipped"]:
                 continue
+            f = e["fields"]
             dest = project_module.use_cases_dir(slug) / f"{f.name}.yaml"
             dest.write_text(wizard_module.to_yaml(f), encoding="utf-8")
             written.append(f.name)
-        return redirect(url_for("project_detail", slug=slug), code=303)
+        if not written:
+            return redirect(url_for("bulk_create_form", slug=slug), code=303)
+        created = f"created {len(written)} AI feature(s): " + ", ".join(written)
+        return redirect(url_for("project_detail", slug=slug, created=created), code=303)
 
     # ── Use case detail / approve / run detail — scoped and unscoped ────────
 

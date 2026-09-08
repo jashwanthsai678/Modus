@@ -1,24 +1,49 @@
 {% extends "base.html" %}
 {% block title %}Bulk-create — {{ project.name }}{% endblock %}
 {% block content %}
-<p class="muted"><a class="link" href="{{ url_for('scan_results', slug=project.slug) }}">&larr; scan results</a></p>
-<h1>Create {{ candidates|length }} AI feature(s)</h1>
-<p class="muted">Each candidate gets the project's shared rubric/price/judge (from
-  <a class="link" href="{{ url_for('project_defaults', slug=project.slug) }}">Project defaults</a>)
-  plus a set of test cases drafted by a model from its detected prompt — you'll review and can
-  edit every one of them before anything is actually saved.</p>
+<p class="crumb"><a class="link" href="{{ url_for('scan_results', slug=project.slug) }}">&larr; scan results</a></p>
+<div class="page-head">
+  <h1>Create {{ candidates|length }} AI feature{{ 's' if candidates|length != 1 else '' }}</h1>
+  <p class="sub">Each candidate gets the project's shared rubric, price ceiling, and judge (from
+    <a class="link" href="{{ url_for('project_defaults', slug=project.slug) }}">Project defaults</a>)
+    plus test cases drafted by a model from its detected prompt — you review and can edit every
+    one of them before anything is saved.</p>
+</div>
 
-<div class="card">
-  <p><strong>This spends money</strong>: one model call per candidate to draft its test cases,
-    using <code>{{ generation_model }}</code>.</p>
-  <p>candidates: {{ candidates|length }}</p>
-  <ul>
+{% if rubric_missing %}
+{# BLOCKS THE DRAFT, not the save. Drafting spends one model call per
+   candidate, and a feature cannot be saved without a rubric — so letting
+   someone draft here would charge them for work that provably can't be
+   kept. This is the check that was missing when drafts silently vanished. #}
+<div class="card flash-error">
+  <p style="margin:0;"><strong>This project has no rubric yet</strong>, so none of these features
+    could be saved — the judge would have nothing to score answers against. Set one first;
+    drafting before that would spend {{ candidates|length }} model call{{ 's' if candidates|length != 1 else '' }}
+    on features that can't be kept.</p>
+  <p style="margin:var(--sp-3) 0 0;">
+    <a class="btn btn-primary" href="{{ url_for('project_defaults', slug=project.slug) }}">Set the project rubric</a>
+  </p>
+</div>
+{% endif %}
+
+<div class="panel">
+  <div class="panel-head">
+    <h3>What this will cost</h3>
+    <span class="badge none">{{ candidates|length }} candidate{{ 's' if candidates|length != 1 else '' }}</span>
+  </div>
+  <p>One model call per candidate to draft its test cases, using
+    <span class="mono">{{ generation_model }}</span>. Nothing else spends money at this step.</p>
+  <ul class="stack-tight" style="margin:0 0 var(--sp-4); padding-left:18px;">
     {% for c in candidates %}
-    <li>{{ c.file }} {% if c.model %}&mdash; <code>{{ c.model }}</code>{% endif %}</li>
+    <li><span class="mono">{{ c.file }}</span>{% if c.model %} &mdash; <span class="mono">{{ c.model }}</span>{% endif %}</li>
     {% endfor %}
   </ul>
+  {% if not rubric_missing %}
   <form method="post" data-working-text="Drafting test cases for {{ candidates|length }} feature(s) — one model call each, this can take a few minutes on a free model…">
-    <button type="submit" class="btn btn-primary">Draft {{ candidates|length }} feature(s)</button>
+    <button type="submit" class="btn btn-primary">Draft {{ candidates|length }} feature{{ 's' if candidates|length != 1 else '' }}</button>
   </form>
+  {% else %}
+  <button type="button" class="btn" disabled title="set a project rubric first">Draft {{ candidates|length }} feature{{ 's' if candidates|length != 1 else '' }}</button>
+  {% endif %}
 </div>
 {% endblock %}
