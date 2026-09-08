@@ -284,7 +284,16 @@ async def scan_file(path: Path, *, scan_model: str, max_file_bytes: int = 40_000
         data = await client_module.call_json(
             _PROMPT.format(path=path.name, content=text, imports_block=imports_block),
             model=scan_model, label=f"scan[{path.name}]", required=("calls",),
-            temperature=0.0, max_tokens=1200)
+            # 3000, not 1200. CONFIRMED LIVE: some free models narrate their
+            # reasoning directly inside the answer — re-quoting the file,
+            # thinking out loud — before ever reaching the actual JSON, and
+            # 1200 tokens was cut off mid-narration every time on a bundled
+            # (file + import) prompt, never reaching the JSON at all. This
+            # isn't wasted spend on models that answer directly; it's
+            # headroom for the ones that don't, so scanning doesn't
+            # systematically fail on exactly the multi-file cases the
+            # import-following feature exists to handle.
+            temperature=0.0, max_tokens=3000)
     except Exception as exc:                        # noqa: BLE001
         return [{"file": str(path), "error": str(exc)[:200]}]
     out = []
