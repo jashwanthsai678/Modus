@@ -5,13 +5,27 @@
 <p class="muted">judge {{ board.judge }} &middot; ran {{ board.ranAt }} &middot;
   <a class="link" href="{{ scoped_url('usecase', project=project, name=board.useCase) }}">back to use case</a></p>
 
-{% for tier, rows in (board.tiers or {}).items() %}
+<div class="card">
+  <form method="get">
+    <label for="price_sensitivity">how much should price count? <span class="hint">(0 = quality only,
+      today's default ranking; 100 = cheapest wins regardless of score. This only changes how you're
+      VIEWING this leaderboard — it never changes what gets flagged pending.)</span></label>
+    <input id="price_sensitivity" name="price_sensitivity" type="range" min="0" max="100" step="5"
+           value="{{ price_sensitivity|int }}" oninput="document.getElementById('ps_val').textContent = this.value"
+           onchange="this.form.submit()" style="width: 100%;">
+    <span class="muted"><span id="ps_val">{{ price_sensitivity|int }}</span> / 100</span>
+    <noscript><button type="submit" class="btn" style="margin-top: 8px;">Update</button></noscript>
+  </form>
+</div>
+
+{% for tier, rows in (tiers or {}).items() %}
 <h2>{{ tier|upper }}</h2>
 
 {% set scored = rows|selectattr('score', 'ne', none)|list %}
 {% if scored %}
 <div class="chart" role="img" aria-label="Score out of 5 by model, {{ tier }} tier">
   {% for r in scored %}
+  {% set display_score = r.combinedScore if r.combinedScore is not none else r.score %}
   <div class="bar-row" tabindex="0">
     <div class="bar-label">
       {{ r.model }}
@@ -20,11 +34,12 @@
     </div>
     <div class="bar-track">
       <div class="bar-fill{{ ' is-approved' if r.isApproved else '' }}"
-           style="width: {{ (r.score / 5 * 100)|round(1) }}%"></div>
+           style="width: {{ (display_score / 5 * 100)|round(1) }}%"></div>
     </div>
-    <div class="bar-value">{{ '%.2f'|format(r.score) }}</div>
+    <div class="bar-value">{{ '%.2f'|format(display_score) }}</div>
     <div class="bar-tooltip">
-      <strong>{{ '%.2f'|format(r.score) }}</strong> / 5 &middot; {{ r.model }}<br>
+      <strong>{{ '%.2f'|format(display_score) }}</strong>{% if r.combinedScore is not none %}
+      combined (quality {{ '%.2f'|format(r.score) }}){% else %} / 5{% endif %} &middot; {{ r.model }}<br>
       price {% if r.price_out is not none %}${{ '%.2f'|format(r.price_out) }}/M{% else %}unknown{% endif %}
       &middot; would ship {% if r.wouldShipRate is not none %}{{ (r.wouldShipRate * 100)|round|int }}%{% else %}—{% endif %}
       {% if r.judgeSpread is not none %}<br>judge spread &plusmn;{{ '%.2f'|format(r.judgeSpread) }}
@@ -41,12 +56,13 @@
 {% endif %}
 
 <table>
-  <tr><th>Model</th><th>Score</th><th>Price out</th><th>Would ship</th><th>Note</th></tr>
+  <tr><th>Model</th><th>Score</th>{% if price_sensitivity %}<th>Combined</th>{% endif %}<th>Price out</th><th>Would ship</th><th>Note</th></tr>
   {% for r in rows %}
   <tr class="{{ 'approved' if r.isApproved else '' }}{{ ' shortlisted' if r.model in ((board.shortlists or {}).get(tier) or []) else '' }}">
     <td>{{ r.model }}{% if r.isApproved %} <span class="badge approved">approved</span>{% endif %}
       {% if r.rateLimited %} <span class="badge pending">rate limited</span>{% endif %}</td>
     <td>{% if r.score is not none %}{{ '%.2f'|format(r.score) }}{% if r.judgeSpread is not none %}<span class="muted"> (&plusmn;{{ '%.2f'|format(r.judgeSpread) }} judge spread)</span>{% endif %}{% else %}—{% endif %}</td>
+    {% if price_sensitivity %}<td>{% if r.combinedScore is not none %}{{ '%.2f'|format(r.combinedScore) }}{% else %}—{% endif %}</td>{% endif %}
     <td>{% if r.price_out is not none %}${{ '%.2f'|format(r.price_out) }}/M{% else %}—{% endif %}</td>
     <td>{% if r.wouldShipRate is not none %}{{ (r.wouldShipRate * 100)|round|int }}%{% else %}—{% endif %}</td>
     <td class="muted">{{ r.rateLimitNote or r.error or '' }}</td>

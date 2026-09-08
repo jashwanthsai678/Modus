@@ -124,6 +124,56 @@ def attach_candidate_spread(board: dict, spread_by_model: dict) -> None:
                 row["candidateSpread"] = spread_by_model[row["model"]]
 
 
+def combined_score(score: Optional[float], price_out: Optional[float],
+                   max_price_out: float, price_sensitivity: float) -> Optional[float]:
+    """Blends a 1-5 quality score with price into one number, weighted by
+    `price_sensitivity` (0-100 — 0 means "price doesn't count", 100 means
+    "only price counts"). AT 0, THIS RETURNS `score` UNCHANGED — the
+    default reproduces today's quality-only ranking exactly, so nothing
+    about an existing leaderboard's order changes unless someone actually
+    moves this dial.
+
+    Price is normalized against `max_price_out` — the feature's OWN price
+    ceiling, what you already said you're willing to pay at most — never
+    against whatever happened to be the cheapest candidate that ran. A
+    candidate right at the ceiling scores 0 on price, free scores 5,
+    linear between. UNKNOWN PRICE IS NEVER FAVORABLE, the same rule as
+    every other guardrail in this project: a candidate with no price data
+    gets the worst possible price score, never a guessed good one."""
+    if score is None:
+        return None
+    w = max(0.0, min(100.0, price_sensitivity)) / 100.0
+    if w == 0.0:
+        return round(score, 3)
+    if price_out is None:
+        price_score = 0.0
+    elif max_price_out <= 0:
+        price_score = 5.0 if price_out <= 0 else 0.0
+    else:
+        price_score = 5.0 * max(0.0, 1.0 - min(price_out, max_price_out) / max_price_out)
+    return round(score * (1 - w) + price_score * w, 3)
+
+
+def reorder_by_preference(board: dict, *, price_sensitivity: float, max_price_out: float) -> dict:
+    """A NEW `{tier: [row, ...]}` dict, re-sorted by `combined_score`
+    instead of raw quality — never mutates `board`, and never touches what
+    `record_run` used to decide what's pending (that stays quality-only,
+    always — this is a display-time lens for a human comparing options, not
+    something that changes what gets automatically proposed). At
+    `price_sensitivity=0` this is `board["tiers"]` itself, unchanged."""
+    if not price_sensitivity:
+        return board.get("tiers") or {}
+    out = {}
+    for tier, rows in (board.get("tiers") or {}).items():
+        annotated = []
+        for r in rows:
+            c = combined_score(r.get("score"), r.get("price_out"), max_price_out, price_sensitivity)
+            annotated.append({**r, "combinedScore": c})
+        annotated.sort(key=lambda r: (r["combinedScore"] is None, -(r["combinedScore"] or 0)))
+        out[tier] = annotated
+    return out
+
+
 def best_overall(board: dict) -> Optional[dict]:
     """The single best-scoring candidate across every tier, for the
     approved-vs-candidate comparison the notifier needs. Ties within a tier are

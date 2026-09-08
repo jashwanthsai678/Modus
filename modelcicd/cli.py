@@ -174,6 +174,8 @@ def cmd_project_set_defaults(args) -> int:
         current["tiers"] = [t.strip() for t in args.tiers.split(",") if t.strip()]
     if args.judge_model is not None:
         current["judgeModel"] = args.judge_model
+    if args.generation_model is not None:
+        current["generationModel"] = args.generation_model
     if args.max_tokens is not None:
         current["maxTokens"] = args.max_tokens
     if args.min_improvement is not None:
@@ -197,6 +199,7 @@ def cmd_project_set_defaults(args) -> int:
     print(f"  min context      {d['minContext']:,}")
     print(f"  tiers            {', '.join(d['tiers'])}")
     print(f"  judge model      {d.get('judgeModel') or '(uses the global default)'}")
+    print(f"  generation model {d.get('generationModel') or '(reuses the judge model)'}")
     print(f"  min improvement  {d['minImprovement']}")
     print(f"\nApplies to features created after this point — nothing already saved changes.")
     return 0
@@ -665,6 +668,10 @@ def build_parser() -> argparse.ArgumentParser:
     pd.add_argument("--min-context", type=int, default=None)
     pd.add_argument("--tiers", default=None, help="comma-separated, e.g. free,paid-low")
     pd.add_argument("--judge-model", default=None)
+    pd.add_argument("--generation-model", default=None,
+                    help="drafts a test case's reference answer when bulk-creating from a "
+                         "scan — a separate role from the judge, worth a stronger model even "
+                         "if the judge stays cheap. Blank/omitted reuses the judge model.")
     pd.add_argument("--max-tokens", type=int, default=None)
     pd.add_argument("--min-improvement", type=float, default=None)
     pd.add_argument("--rubric", default=None,

@@ -75,9 +75,16 @@
       <label for="tier-{{ t }}" style="margin:0;">{{ t }}</label>
     </div>
     {% endfor %}
-    <label for="judge_model">judge model <span class="hint">(pinned, must not be a candidate)</span></label>
+    <label for="judge_model">judge model <span class="hint">(pinned, must not be a candidate — grades
+      answers against the rubric, blind; a cheap, merely-competent model is fine here)</span></label>
     <input id="judge_model" name="judge_model" type="text" value="{{ fields.judge_model }}"
            placeholder="{{ default_judge_model }}">
+    <label for="generation_model">test-case generation model <span class="hint">(optional — drafts a
+      test case's reference answer when bulk-creating from a scan. A DIFFERENT job from judging:
+      writing the best possible answer is harder than grading one, so this is worth pointing at a
+      stronger/flagship model even if the judge stays cheap. Leave blank to reuse the judge model.)</span></label>
+    <input id="generation_model" name="generation_model" type="text"
+           value="{{ fields.generation_model or '' }}" placeholder="e.g. openai/gpt-4o (blank = uses judge model)">
     <label for="max_tokens">max tokens per answer</label>
     <input id="max_tokens" name="max_tokens" type="number" value="{{ fields.max_tokens }}">
   </div>

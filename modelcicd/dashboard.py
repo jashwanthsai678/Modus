@@ -339,6 +339,7 @@ def create_app() -> Flask:
                 "allowFree": request.form.get("allow_free") == "on",
                 "tiers": request.form.getlist("tiers") or list(wizard_module.DEFAULT_TIERS),
                 "judgeModel": request.form.get("judge_model", "").strip() or None,
+                "generationModel": request.form.get("generation_model", "").strip() or None,
                 "maxTokens": int(request.form.get("max_tokens") or 1200),
                 "minImprovement": float(request.form.get("min_improvement") or 0.20),
             }
@@ -459,8 +460,9 @@ def create_app() -> Flask:
         if not candidates:
             return redirect(url_for("scan_results", slug=slug), code=303)
         judge_model = proj.defaults.get("judgeModel") or config_module.DEFAULT_JUDGE_MODEL
+        generation_model = proj.defaults.get("generationModel") or judge_model
         return render_template("bulk_create.html", project=proj, candidates=candidates,
-                              judge_model=judge_model)
+                              generation_model=generation_model)
 
     @app.route("/projects/<slug>/scan/bulk-create", methods=["POST"])
     def bulk_create_generate(slug):
@@ -470,12 +472,13 @@ def create_app() -> Flask:
         proj = project_module.load(slug)
         candidates = _load_scan_results(slug)
         judge_model = proj.defaults.get("judgeModel") or config_module.DEFAULT_JUDGE_MODEL
+        generation_model = proj.defaults.get("generationModel") or judge_model
         existing = {p.stem for p in project_module.list_use_cases(slug)}
 
         async def draft(candidate: dict) -> dict:
             cases = await code_scan_module.generate_test_cases(
                 candidate.get("prompt") or "", input_structure=candidate.get("inputStructure"),
-                output_structure=candidate.get("outputStructure"), model=judge_model)
+                output_structure=candidate.get("outputStructure"), model=generation_model)
             return {"candidate": candidate, "cases": cases}
 
         async def draft_all() -> list:
@@ -515,7 +518,7 @@ def create_app() -> Flask:
             fields_list.append(f)
 
         return render_template("bulk_create_review.html", project=proj,
-                              fields_list=fields_list, judge_model=judge_model)
+                              fields_list=fields_list, generation_model=generation_model)
 
     @app.route("/projects/<slug>/scan/bulk-create/save", methods=["POST"])
     def bulk_create_save(slug):
@@ -643,6 +646,8 @@ def create_app() -> Flask:
         return render_template("pending.html", items=state_module.all_pending())
 
     def run_detail(filename, project=None):
+        from . import config as config_module
+        from . import rank as rank_module
         # `.name` strips any directory component a crafted URL might smuggle
         # in — this must never resolve outside the run directory.
         _, out_dir = _roots(project)
@@ -651,7 +656,31 @@ def create_app() -> Flask:
             abort(404, f"no run file named {filename!r}")
         data = json.loads(p.read_text(encoding="utf-8"))
         board = data.get("board") or {}
-        return render_template("run.html", board=board, filename=p.name, project=project)
+
+        price_sensitivity = request.args.get("price_sensitivity", type=float) or 0.0
+        tiers = board.get("tiers") or {}
+        if price_sensitivity:
+            max_price_out = None
+            if project:
+                uc_path = project_module.find_use_case(project, board.get("useCase", ""))
+                if uc_path:
+                    try:
+                        max_price_out = config_module.load(uc_path).guardrails.max_price_out
+                    except (ValueError, FileNotFoundError):
+                        max_price_out = None
+            if max_price_out is None:
+                # Unscoped run, or the use case's yaml couldn't be found —
+                # fall back to the highest price actually seen in this run
+                # rather than fail; still self-consistent, just normalized
+                # against this run's own field instead of a stated ceiling.
+                observed = [r.get("price_out") for band in tiers.values() for r in band
+                           if r.get("price_out") is not None]
+                max_price_out = max(observed) if observed else 0.0
+            tiers = rank_module.reorder_by_preference(
+                board, price_sensitivity=price_sensitivity, max_price_out=max_price_out)
+
+        return render_template("run.html", board=board, tiers=tiers, filename=p.name,
+                              project=project, price_sensitivity=price_sensitivity)
 
     app.add_url_rule("/run/<path:filename>", "run_detail", run_detail)
     app.add_url_rule("/projects/<project>/run/<path:filename>", "run_detail", run_detail)

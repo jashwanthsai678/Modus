@@ -703,6 +703,53 @@ def test_rank_attach_judge_spread_only_touches_named_rows() -> None:
     check("unnamed row stays None", row_b["judgeSpread"] is None)
 
 
+# ── rank: a price preference is a display-time lens, never a promotion ──────
+
+def test_combined_score_at_zero_sensitivity_is_unchanged() -> None:
+    check("returns score exactly", rank.combined_score(4.2, 1.50, 3.00, 0) == 4.2)
+    check("even with unknown price", rank.combined_score(4.2, None, 3.00, 0) == 4.2)
+
+
+def test_combined_score_treats_unknown_price_as_worst_not_guessed() -> None:
+    known = rank.combined_score(3.0, 3.00, 3.00, 100)   # at the ceiling -> price_score 0
+    unknown = rank.combined_score(3.0, None, 3.00, 100)  # unknown -> also price_score 0
+    check("unknown price scores no better than the worst known price",
+         unknown == known == 0.0, f"{unknown} vs {known}")
+
+
+def test_combined_score_free_beats_expensive_at_full_sensitivity() -> None:
+    free = rank.combined_score(3.0, 0.0, 3.00, 100)
+    expensive = rank.combined_score(5.0, 3.00, 3.00, 100)
+    check("free scores max on price regardless of quality", free == 5.0, f"{free}")
+    check("at the ceiling scores worst on price regardless of quality", expensive == 0.0, f"{expensive}")
+
+
+def test_reorder_by_preference_at_zero_returns_the_original_tiers() -> None:
+    board = rank.build(_bench(_row("a", 4.4), _row("b", 4.3)), None)
+    check("unchanged at 0", rank.reorder_by_preference(
+        board, price_sensitivity=0, max_price_out=3.0) is board["tiers"])
+
+
+def test_reorder_by_preference_can_flip_the_order_on_price() -> None:
+    # Both models land in the SAME price tier (paid-low, <= $0.50/M out) —
+    # ranking is always per tier, so two candidates in different tiers
+    # would never compete against each other at all.
+    cat = {"models": {
+        "a": {"key": "a", "cheapest_out": 0.50},
+        "b": {"key": "b", "cheapest_out": 0.05},
+    }}
+    board = rank.build(_bench(_row("a", 5.0), _row("b", 3.0)), cat)
+    tiers = board["tiers"]
+    check("both in the same tier", set(tiers.keys()) == {"paid-low"}, f"{tiers}")
+    check("quality-only: pricier-but-best is first",
+         tiers["paid-low"][0]["model"] == "a", f"{tiers['paid-low']}")
+
+    reordered = rank.reorder_by_preference(board, price_sensitivity=100, max_price_out=0.50)
+    check("price-only: the much cheaper candidate now first despite lower quality",
+         reordered["paid-low"][0]["model"] == "b", f"{reordered['paid-low']}")
+    check("original board object untouched", board["tiers"]["paid-low"][0]["model"] == "a")
+
+
 # ── code_scan: confidence is a real, actionable signal ───────────────────────
 
 def test_scan_summary_counts_by_confidence() -> None:

@@ -50,7 +50,14 @@ DEFAULT_PROJECT_DEFAULTS = {
     "rubric": [],
     "maxPriceIn": 0.50, "maxPriceOut": 3.00, "minContext": 32_000,
     "requireJson": True, "allowFree": True, "tiers": ["free", "paid-low", "paid-mid"],
-    "judgeModel": None,   # None here means "use config.DEFAULT_JUDGE_MODEL"
+    "judgeModel": None,       # None here means "use config.DEFAULT_JUDGE_MODEL"
+    # DELIBERATELY A SEPARATE ROLE FROM judgeModel. One writes a test case's
+    # draft reference answer (wants to be strong/capable); the other grades
+    # candidates against it, blind (wants to be cheap and merely competent —
+    # grading is an easier task than writing the best possible answer). None
+    # here means "fall back to judgeModel", so this stays fully optional and
+    # nothing changes for a project that never sets it.
+    "generationModel": None,
     "maxTokens": 1200, "minImprovement": 0.20,
 }
 

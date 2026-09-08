@@ -38,6 +38,7 @@ class WizardFields:
     allow_free: bool = True
     tiers: list = field(default_factory=lambda: list(DEFAULT_TIERS))
     judge_model: str = DEFAULT_JUDGE_MODEL
+    generation_model: Optional[str] = None   # drafts a test case's reference answer; None = uses judge_model
     max_tokens: int = 1200
     notify_email: Optional[str] = None
     min_improvement: float = 0.20
@@ -72,6 +73,7 @@ def defaults_from_project(defaults: dict) -> WizardFields:
     f.allow_free = bool(defaults.get("allowFree", f.allow_free))
     f.tiers = list(defaults.get("tiers") or f.tiers)
     f.judge_model = defaults.get("judgeModel") or f.judge_model
+    f.generation_model = defaults.get("generationModel") or None
     f.max_tokens = int(defaults.get("maxTokens", f.max_tokens))
     f.min_improvement = float(defaults.get("minImprovement", f.min_improvement))
     return f
