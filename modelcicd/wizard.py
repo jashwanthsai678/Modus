@@ -51,6 +51,8 @@ class WizardFields:
     code_file: Optional[str] = None            # relative to the project's repo_path
     code_current_model: Optional[str] = None   # the exact string hardcoded there right now
     estimated_calls_per_day: Optional[int] = None   # rough usage, for rate-limit context
+    input_structure: Optional[str] = None      # what the code sends, from a scan — display only
+    output_structure: Optional[str] = None     # what the code expects back, from a scan — display only
 
 
 def defaults_from_project(defaults: dict) -> WizardFields:
@@ -143,6 +145,10 @@ def to_yaml(f: WizardFields) -> str:
         doc["codeTarget"] = {"file": f.code_file, "currentModel": f.code_current_model}
     if f.estimated_calls_per_day:
         doc["usage"] = {"callsPerDay": int(f.estimated_calls_per_day)}
+    if f.input_structure:
+        doc["inputStructure"] = f.input_structure
+    if f.output_structure:
+        doc["outputStructure"] = f.output_structure
     return yaml.safe_dump(doc, sort_keys=False, allow_unicode=True)
 
 
@@ -193,6 +199,9 @@ def collect_cli(prompt_fn: Callable = input, *, repo_slug: Optional[str] = None,
         if use_it.lower() in ("y", "yes"):
             f.system_prompt = prefill["prompt"]
             used_prefill_prompt = True
+    if prefill:
+        f.input_structure = prefill.get("inputStructure") or None
+        f.output_structure = prefill.get("outputStructure") or None
 
     if not used_prefill_prompt:
         print("System prompt — paste it, then an empty line to finish:")
@@ -312,4 +321,6 @@ def from_form(get_list: Callable, get: Callable) -> WizardFields:
     f.code_current_model = get("code_current_model", "").strip() or None
     calls = get("estimated_calls_per_day", "").strip()
     f.estimated_calls_per_day = int(calls) if calls else None
+    f.input_structure = get("input_structure", "").strip() or None
+    f.output_structure = get("output_structure", "").strip() or None
     return f

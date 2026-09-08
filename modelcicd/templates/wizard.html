@@ -33,6 +33,12 @@
     <input id="description" name="description" type="text" value="{{ fields.description if fields else '' }}">
     <label for="system_prompt">System prompt <span class="hint">(what every candidate — and your live endpoint, if you add one — is asked)</span></label>
     <textarea id="system_prompt" name="system_prompt" required>{{ fields.system_prompt if fields else '' }}</textarea>
+    <label for="input_structure">Input structure <span class="hint">(optional — what the code actually sends, if a scan found it; shown on the feature's page later)</span></label>
+    <input id="input_structure" name="input_structure" type="text"
+           value="{{ fields.input_structure if fields and fields.input_structure else '' }}">
+    <label for="output_structure">Output structure <span class="hint">(optional — what the code expects back)</span></label>
+    <input id="output_structure" name="output_structure" type="text"
+           value="{{ fields.output_structure if fields and fields.output_structure else '' }}">
   </div>
 
   <div class="card">

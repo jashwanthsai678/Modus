@@ -160,6 +160,8 @@ class UseCase:
     schedule_interval_days: Optional[int] = None  # re-run automatically on this cadence
     code_target: Optional[CodeTarget] = None  # where to (optionally) patch an approved model back to
     estimated_calls_per_day: Optional[int] = None  # rough usage, paired with any observed rate limiting
+    input_structure: Optional[str] = None   # what the code actually sends, from a scan — display only
+    output_structure: Optional[str] = None  # what the code expects back, from a scan — display only
     path: Optional[Path] = None      # where this was loaded from, for error messages
 
 
@@ -252,7 +254,9 @@ def load(path) -> UseCase:
         endpoint=endpoint,
         schedule_interval_days=int(interval) if interval else None,
         code_target=code_target,
-        estimated_calls_per_day=int(calls_per_day) if calls_per_day else None, path=p)
+        estimated_calls_per_day=int(calls_per_day) if calls_per_day else None,
+        input_structure=raw.get("inputStructure"), output_structure=raw.get("outputStructure"),
+        path=p)
 
 
 def describe(uc: UseCase) -> str:

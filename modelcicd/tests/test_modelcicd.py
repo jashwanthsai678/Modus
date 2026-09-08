@@ -1130,6 +1130,26 @@ def test_wizard_yaml_carries_endpoint_and_schedule() -> None:
         check("schedule loaded", uc.schedule_interval_days == 7)
 
 
+def test_wizard_yaml_carries_input_output_structure() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "demo_feature.yaml"
+        fields = _wizard_fields(input_structure="a single string: the ticket text",
+                                output_structure='JSON: {"reply": "..."}')
+        p.write_text(wizard.to_yaml(fields), encoding="utf-8")
+        uc = config.load(p)
+        check("input structure loaded", uc.input_structure == fields.input_structure)
+        check("output structure loaded", uc.output_structure == fields.output_structure)
+
+
+def test_wizard_yaml_omits_structure_fields_when_absent() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "demo_feature.yaml"
+        p.write_text(wizard.to_yaml(_wizard_fields()), encoding="utf-8")
+        uc = config.load(p)
+        check("input structure absent", uc.input_structure is None)
+        check("output structure absent", uc.output_structure is None)
+
+
 def test_wizard_rejects_missing_name() -> None:
     errors = wizard.validate(_wizard_fields(name=""))
     check("name required", any("name" in e for e in errors), f"{errors}")

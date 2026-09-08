@@ -24,6 +24,19 @@
     <label for="f{{ outer_i }}_system_prompt">system prompt</label>
     <textarea id="f{{ outer_i }}_system_prompt" name="f{{ outer_i }}_system_prompt">{{ f.system_prompt }}</textarea>
 
+    {% if f.input_structure or f.output_structure %}
+    <div class="row">
+      <div>
+        <label>input structure <span class="hint">(from the scan — display only, edit if wrong)</span></label>
+        <input name="f{{ outer_i }}_input_structure" type="text" value="{{ f.input_structure or '' }}">
+      </div>
+      <div>
+        <label>output structure</label>
+        <input name="f{{ outer_i }}_output_structure" type="text" value="{{ f.output_structure or '' }}">
+      </div>
+    </div>
+    {% endif %}
+
     {% if f.code_file %}
     <div class="row">
       <div>

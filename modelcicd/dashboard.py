@@ -128,7 +128,9 @@ def _fields_from_scan_candidate(proj, candidate: dict) -> "wizard_module.WizardF
             pass
     return wizard_module.WizardFields(
         system_prompt=candidate.get("prompt") or "",
-        code_file=code_file or None, code_current_model=candidate.get("model"))
+        code_file=code_file or None, code_current_model=candidate.get("model"),
+        input_structure=candidate.get("inputStructure"),
+        output_structure=candidate.get("outputStructure"))
 
 
 def create_app() -> Flask:
@@ -245,6 +247,66 @@ def create_app() -> Flask:
         return render_template("project.html", project=proj, cases=cases,
                               defined_not_run=sorted(defined_not_run),
                               has_scan_results=has_scan_results, steps=steps)
+
+    # ── Overview — everything about a project's features, in one place ──────
+    #
+    # A PURE READ, NOTHING NEW COMPUTED. Every value shown here already lives
+    # in a use_case.yaml, a state file, or a saved run file — this route just
+    # gathers them into one page instead of requiring five separate visits
+    # (the project page, the use case page, a run page, Project Defaults) to
+    # see the full picture of one project.
+
+    def _top_tier_snapshot(board):
+        """The single most relevant tier's top 3 rows, for a compact
+        per-feature snapshot — the tier holding the approved model if
+        there is one, else whichever tier has the single best score.
+        Keeps an overview page readable with many features on it, instead
+        of dumping every tier from every run inline."""
+        if not board or not board.get("tiers"):
+            return None, []
+        for tier, rows in board["tiers"].items():
+            if any(r.get("isApproved") for r in rows):
+                return tier, rows[:3]
+        best_tier, best_score = None, None
+        for tier, rows in board["tiers"].items():
+            scored = [r for r in rows if r.get("score") is not None]
+            if scored and (best_score is None or scored[0]["score"] > best_score):
+                best_tier, best_score = tier, scored[0]["score"]
+        if best_tier is None:
+            best_tier = next(iter(board["tiers"]))
+        return best_tier, board["tiers"][best_tier][:3]
+
+    @app.route("/projects/<slug>/overview")
+    def project_overview(slug):
+        from . import config as config_module
+        try:
+            proj = project_module.load(slug)
+        except FileNotFoundError:
+            abort(404, f"no project at {slug!r}")
+
+        rows = []
+        for p in project_module.list_use_cases(slug):
+            try:
+                uc = config_module.load(p)
+            except (ValueError, FileNotFoundError):
+                continue
+            state = state_module.load(uc.name, project_module.state_dir(slug))
+            run_files = _runs_for(uc.name, project_module.out_dir(slug))
+            latest_board = None
+            if run_files:
+                try:
+                    saved = json.loads(run_files[0].read_text(encoding="utf-8"))
+                    latest_board = saved.get("board")
+                except (json.JSONDecodeError, OSError):
+                    latest_board = None
+            snapshot_tier, snapshot_rows = _top_tier_snapshot(latest_board)
+            rows.append({
+                "uc": uc, "state": state, "latest_board": latest_board,
+                "latest_run_filename": run_files[0].name if run_files else None,
+                "snapshot_tier": snapshot_tier, "snapshot_rows": snapshot_rows,
+                "sparkline": _sparkline(_best_per_run(state.get("history") or [])),
+            })
+        return render_template("project_overview.html", project=proj, rows=rows)
 
     # ── Project defaults — the shared template every NEW feature starts from ─
 
@@ -445,6 +507,8 @@ def create_app() -> Flask:
             f.system_prompt = candidate.get("prompt") or ""
             f.test_cases = [{"id": c["id"], "input": c["input"], "reference": c.get("reference")}
                             for c in (d["cases"] or [])]
+            f.input_structure = candidate.get("inputStructure")
+            f.output_structure = candidate.get("outputStructure")
             if candidate.get("model"):
                 f.code_file = code_file or None
                 f.code_current_model = candidate.get("model")
@@ -479,6 +543,8 @@ def create_app() -> Flask:
             code_model = request.form.get(f"{prefix}code_current_model", "").strip()
             if code_file and code_model:
                 f.code_file, f.code_current_model = code_file, code_model
+            f.input_structure = request.form.get(f"{prefix}input_structure", "").strip() or None
+            f.output_structure = request.form.get(f"{prefix}output_structure", "").strip() or None
             if request.form.get(f"{prefix}skip") == "on" or not f.name or not f.system_prompt.strip():
                 continue
             errors = wizard_module.validate(f)

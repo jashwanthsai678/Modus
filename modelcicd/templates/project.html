@@ -45,6 +45,7 @@
 
 <div class="card">
   <a class="btn btn-primary" href="{{ url_for('new_use_case', slug=project.slug) }}">+ Add an AI feature</a>
+  <a class="btn" href="{{ url_for('project_overview', slug=project.slug) }}">Overview</a>
   {% if project.repo_path and has_scan_results %}
   <a class="btn" href="{{ url_for('scan_results', slug=project.slug) }}">View scan results</a>
   <a class="btn" href="{{ url_for('scan_repo_form', slug=project.slug) }}">Scan again</a>

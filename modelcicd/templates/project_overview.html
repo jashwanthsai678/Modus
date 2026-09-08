@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Overview — {{ project.name }}{% endblock %}
+{% block content %}
+<p class="muted"><a class="link" href="{{ url_for('project_detail', slug=project.slug) }}">&larr; {{ project.name }}</a></p>
+<h1>{{ project.name }} — overview</h1>
+<p class="muted">Everything about this project's AI features in one place — the model each one
+  is using, the proof behind it, and what it actually sends and expects back.</p>
+
+<div class="card">
+  <div class="row">
+    <div>
+      <div class="muted">Connected repo</div>
+      <div>{{ project.repo_path or '(none connected)' }}</div>
+    </div>
+    <div>
+      <div class="muted">Marketplaces searched</div>
+      <div>{{ project.providers|join(', ') }}</div>
+    </div>
+    <div>
+      <div class="muted">Price ceiling / tiers <span class="hint">(project defaults)</span></div>
+      <div>in &le; ${{ '%.2f'|format(project.defaults.maxPriceIn) }}/M, out &le;
+        ${{ '%.2f'|format(project.defaults.maxPriceOut) }}/M &middot;
+        {{ project.defaults.tiers|join(', ') }}</div>
+    </div>
+  </div>
+  <a class="link" href="{{ url_for('project_defaults', slug=project.slug) }}" style="display:inline-block; margin-top:8px;">edit project defaults</a>
+</div>
+
+{% if not rows %}
+<p class="muted">No AI feature defined yet in this project.</p>
+{% endif %}
+
+{% for row in rows %}
+{% set uc = row.uc %}
+{% set state = row.state %}
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:baseline;">
+    <h2 style="margin:0;"><a class="link" href="{{ url_for('usecase', project=project.slug, name=uc.name) }}">{{ uc.name }}</a></h2>
+    {% if state.approvedModel %}<span class="badge approved">approved</span>
+    {% elif state.pending %}<span class="badge pending">pending review</span>
+    {% else %}<span class="badge none">not benched</span>{% endif %}
+  </div>
+  {% if uc.description %}<p class="muted" style="margin-top:2px;">{{ uc.description }}</p>{% endif %}
+
+  <div class="row" style="margin-top:8px;">
+    <div>
+      <div class="muted">Model in production</div>
+      <div>{{ state.approvedModel or '(none yet)' }}
+        {% if state.approvedScore is not none %} — {{ '%.2f'|format(state.approvedScore) }}{% endif %}</div>
+    </div>
+    <div>
+      <div class="muted">Pending candidate</div>
+      <div>{% if state.pending %}{{ state.pending.model }} ({{ state.pending.score }}){% else %}—{% endif %}</div>
+    </div>
+    <div>
+      <div class="muted">Trend</div>
+      <div>
+        {% if row.sparkline %}
+        <svg width="{{ row.sparkline.width }}" height="{{ row.sparkline.height }}" role="img" class="sparkline">
+          <title>best score found per run: {{ row.sparkline.title }}</title>
+          <polyline points="{{ row.sparkline.line }}" fill="none" style="stroke: var(--muted)"
+                    stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+          <circle cx="{{ row.sparkline.last_x }}" cy="{{ row.sparkline.last_y }}" r="4" style="fill: var(--accent-bright)" />
+        </svg>
+        {% else %}<span class="muted">not enough runs yet</span>{% endif %}
+      </div>
+    </div>
+  </div>
+
+  {% if uc.input_structure or uc.output_structure %}
+  <div style="margin-top:10px; font-size:13px;">
+    {% if uc.input_structure %}<div><span class="muted">input:</span> {{ uc.input_structure }}</div>{% endif %}
+    {% if uc.output_structure %}<div><span class="muted">output:</span> {{ uc.output_structure }}</div>{% endif %}
+  </div>
+  {% endif %}
+
+  <div style="margin-top:10px;">
+    <span class="muted">rubric:</span>
+    {% for c in uc.rubric %}
+    <span class="badge tie" style="margin-right:4px;">{{ c.id }} &times;{{ c.weight }}</span>
+    {% else %}
+    <span class="muted">(none set)</span>
+    {% endfor %}
+  </div>
+
+  {% if uc.code_target %}
+  <div class="muted" style="margin-top:8px;">code target: <code>{{ uc.code_target.file }}</code>
+    &middot; tracks {{ uc.code_target.current_model or '(not set)' }}</div>
+  {% endif %}
+
+  {% if row.snapshot_rows %}
+  <h2 style="margin-top:16px;">Latest proof <span class="hint">({{ row.snapshot_tier }} tier, top {{ row.snapshot_rows|length }})</span></h2>
+  <div class="chart" role="img" aria-label="Score out of 5 by model">
+    {% for r in row.snapshot_rows %}
+    <div class="bar-row" tabindex="0">
+      <div class="bar-label">
+        {{ r.model }}
+        {% if r.isApproved %}<span class="badge approved">approved</span>{% endif %}
+      </div>
+      <div class="bar-track">
+        <div class="bar-fill{{ ' is-approved' if r.isApproved else '' }}"
+             style="width: {{ ((r.score or 0) / 5 * 100)|round(1) }}%"></div>
+      </div>
+      <div class="bar-value">{% if r.score is not none %}{{ '%.2f'|format(r.score) }}{% else %}—{% endif %}</div>
+    </div>
+    {% endfor %}
+  </div>
+  <a class="link" href="{{ scoped_url('run_detail', project=project.slug, filename=row.latest_run_filename) }}">full leaderboard</a>
+  {% elif not state.history %}
+  <p class="muted" style="margin-top:10px;">Not benched yet —
+    <a class="link" href="{{ url_for('run_form', project=project.slug, name=uc.name) }}">run it</a>.</p>
+  {% endif %}
+</div>
+{% endfor %}
+{% endblock %}
