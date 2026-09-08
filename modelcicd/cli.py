@@ -689,7 +689,7 @@ def build_parser() -> argparse.ArgumentParser:
     sr = sub.add_parser("scan-repo",
                         help="read the connected repo with a model to find likely LLM call sites")
     sr.add_argument("--project", required=True)
-    sr.add_argument("--scan-model", default="minimax/minimax-m3:free")
+    sr.add_argument("--scan-model", default="nvidia/nemotron-3-ultra-550b-a55b:free")
     sr.add_argument("--max-files", type=int, default=60)
     sr.add_argument("--yes", action="store_true", help="skip the cost confirmation")
 

@@ -39,7 +39,7 @@ from typing import Optional
 from . import client as client_module
 
 SCAN_CONCURRENCY = 6
-DEFAULT_SCAN_MODEL = "minimax/minimax-m3:free"
+DEFAULT_SCAN_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 MAX_IMPORT_FILES = 3
 
 _SKIP_DIRS = {".git", "node_modules", "venv", ".venv", "__pycache__", "dist",
