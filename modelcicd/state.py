@@ -115,6 +115,14 @@ def record_run(use_case: str, board: dict, *, root: Optional[Path] = None) -> di
         state = load(use_case, root)
         state["history"] = (state.get("history") or [])[-49:] + [{
             "ranAt": board.get("ranAt"),
+            # STORED ON THE HISTORY ENTRY, not just in the run file. The
+            # trend chart reads history, so this is the only place a
+            # fingerprint can stop two differently-measured scores from
+            # being drawn as one continuous line. Entries written before
+            # fingerprints existed simply lack the key, and are reported as
+            # "not comparable" rather than assumed to match — an absent
+            # fingerprint is not evidence of an unchanged one.
+            "measurement": board.get("measurement"),
             "tiers": {name: [{"model": r["model"], "score": r["score"]}
                              for r in band]
                      for name, band in board.get("tiers", {}).items()},

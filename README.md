@@ -282,6 +282,62 @@ command above also works as `modelcicd <command>` instead of
 
 ---
 
+## Measurement fingerprints — a trend line that can't lie about itself
+
+A trend line asserts something: *this got better*. That's only true if both
+scores came from the same measuring stick — and this tool actively encourages
+you to improve your rubric, which changes the stick.
+
+It happened in this repo's own data. `agent_router` scored **2.25**, then
+**4.45**. No model changed between those runs; deterministic checks were added
+to the feature. Both points sat on one line, reading as a large improvement
+that nobody measured.
+
+So every run now records a fingerprint of what was measured, and the trend
+line has **three states** instead of two:
+
+| | meaning |
+|---|---|
+| **solid** | same fingerprint — comparable |
+| **dashed** | at least one run has no fingerprint. Drawn, but *unverified* |
+| **gap** | fingerprints differ — provably not the same scale |
+
+The dashed state matters more than it looks. A gap asserts "the measurement
+changed"; a solid line asserts "it didn't". For a run recorded before
+fingerprints existed neither is known, so it gets a dashed edge, which
+asserts nothing. (I first rendered those as gaps. On real history that turned
+four pre-fingerprint runs into four isolated dots and four "breaks" — which
+reads as noise and teaches people to ignore breaks entirely. An unknown never
+being resolved *favorably* doesn't mean it gets resolved unfavorably.)
+
+**Five components, so "what changed?" is answerable** — not one opaque hash.
+The run page shows each, and the CLI and dashboard name them the moment a run
+drifts:
+
+```
+NOT COMPARABLE TO THE PREVIOUS RUN: the rubric changed since then, so this
+score was produced by a different measuring stick. The trend line breaks
+here rather than joining the two.
+```
+
+The components are the system prompt (what was asked), the test cases (what
+it was asked about), the rubric (how it was judged), the deterministic checks
+(what was verified), and the judge model — a different judge is a different
+scale even against an identical rubric. Each edit moves exactly one.
+
+**Guardrails are deliberately excluded.** Price ceilings and tiers decide
+*which* candidates get measured, not how. Raising a ceiling adds rows to a
+leaderboard; it doesn't make the existing rows mean something different.
+Folding it in would cry wolf on a routine edit and train people to click past
+the warning that matters.
+
+The reason this is worth the trouble: in a live test, a rubric reword moved a
+score from **4.45 to 4.40**. That looks perfectly continuous. Without the
+fingerprint nobody would ever suspect those two numbers came from different
+rubrics — which is the dangerous version of this bug, not the obvious one.
+
+---
+
 ## Deterministic checks — the half of "is this good?" that needs no model
 
 A rubric judged by an LLM is the right tool for *"is this reply helpful and

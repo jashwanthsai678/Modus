@@ -41,13 +41,20 @@ def _best_per_run(history: list) -> list:
     """The best score any candidate reached, per past run, oldest first — the
     ceiling that was available each time, not necessarily what got approved.
     A run where nothing could be scored contributes no point rather than a
-    fabricated zero."""
+    fabricated zero.
+
+    Each point carries the fingerprint of what was being measured when it
+    was recorded (see `config.measurement`), so `_sparkline` can refuse to
+    connect two scores produced by different rubrics."""
     points = []
     for run in history[-12:]:
         scores = [row.get("score") for band in (run.get("tiers") or {}).values()
                   for row in band if row.get("score") is not None]
         if scores:
-            points.append(max(scores))
+            points.append({
+                "score": max(scores),
+                "fingerprint": (run.get("measurement") or {}).get("combined"),
+            })
     return points
 
 
@@ -55,18 +62,75 @@ def _sparkline(points: list, *, width: int = 90, height: int = 26, pad: int = 4
               ) -> Optional[dict]:
     """Coordinates for a minimal trend sparkline — the dataviz method's
     stat-tile 'trend': a de-emphasis line with the latest point in the
-    accent. None when there are fewer than two runs to show a trend across."""
+    accent. None when there are fewer than two runs to show a trend across.
+
+    THREE STATES BETWEEN ADJACENT RUNS, NOT TWO — and getting this to two
+    was my first mistake here, caught by looking at real history rather
+    than a test:
+
+        same fingerprint       comparable.  SOLID line.
+        different fingerprint  provably not comparable.  GAP.
+        either one absent      unknown.  DASHED line.
+
+    The third case is the one worth being careful about. A gap asserts "the
+    measurement changed"; a solid line asserts "it didn't". For a run
+    recorded before fingerprints existed, neither is true — so it gets a
+    dashed line, which asserts nothing and says "drawn, but unverified".
+    Rendering those as gaps looked rigorous and was actually just wrong: it
+    shattered every existing history into isolated dots, which reads as
+    noise and trains people to ignore breaks entirely. "Unknown is never
+    resolved in the flattering direction" does not mean unknown gets
+    resolved in the hostile one; it means it doesn't get resolved.
+    """
     if len(points) < 2:
         return None
-    lo, hi = min(points), max(points)
+    values = [p["score"] for p in points]
+    lo, hi = min(values), max(values)
     span = (hi - lo) or 1.0
     n = len(points)
     xs = [pad + i * (width - 2 * pad) / (n - 1) for i in range(n)]
-    ys = [height - pad - (v - lo) * (height - 2 * pad) / span for v in points]
+    ys = [height - pad - (v - lo) * (height - 2 * pad) / span for v in values]
+
+    # Modelled as EDGES, not runs of points — one state per adjacent pair,
+    # which is where comparability actually lives. Segments built from runs
+    # of points can't express "dashed here, solid there" without splitting
+    # on the same boundary twice.
+    edges, breaks, unverified = [], 0, 0
+    for i in range(1, n):
+        prev_fp, this_fp = points[i - 1]["fingerprint"], points[i]["fingerprint"]
+        if prev_fp is None or this_fp is None:
+            state = "unverified"
+            unverified += 1
+        elif prev_fp == this_fp:
+            state = "comparable"
+        else:
+            state = "broken"
+            breaks += 1
+        if state != "broken":
+            edges.append({"points": f"{xs[i-1]:.1f},{ys[i-1]:.1f} {xs[i]:.1f},{ys[i]:.1f}",
+                         "verified": state == "comparable"})
+
+    # A point with no edge on either side would otherwise be invisible.
+    linked = set()
+    for i in range(1, n):
+        prev_fp, this_fp = points[i - 1]["fingerprint"], points[i]["fingerprint"]
+        if not (prev_fp is not None and this_fp is not None and prev_fp != this_fp):
+            linked.update((i - 1, i))
+
+    note = ""
+    if breaks:
+        note += (f"  ({breaks} break{'s' if breaks != 1 else ''} — the rubric, checks, "
+                f"test cases or judge changed, so those scores are not on the same scale)")
+    if unverified:
+        note += (f"  ({unverified} dashed — recorded before runs carried a "
+                f"fingerprint, so comparability is unknown, not confirmed)")
+
     return {"width": width, "height": height,
-            "line": " ".join(f"{x:.1f},{y:.1f}" for x, y in zip(xs, ys)),
+            "edges": edges,
+            "dots": [{"x": xs[i], "y": ys[i]} for i in range(n) if i not in linked],
+            "breaks": breaks, "unverified": unverified,
             "last_x": xs[-1], "last_y": ys[-1],
-            "title": " → ".join(f"{v:.2f}" for v in points)}
+            "title": " → ".join(f"{v:.2f}" for v in values) + note}
 
 
 def _use_cases_in(state_dir: Path) -> list:
@@ -757,9 +821,28 @@ def create_app() -> Flask:
             tiers = rank_module.reorder_by_preference(
                 board, price_sensitivity=price_sensitivity, max_price_out=max_price_out)
 
+        # WHAT WAS MEASURED, AND WHETHER IT MATCHES THE RUN BEFORE THIS ONE.
+        # Read from the use case's own history rather than by opening the
+        # adjacent run file, so this still works when older runs have been
+        # cleaned up — history keeps the fingerprint even after the run
+        # file is gone.
+        measurement = board.get("measurement")
+        drifted_from_previous = []
+        state_root, _ = _roots(project)
+        history = state_module.load(board.get("useCase", ""), state_root).get("history") or []
+        for i, entry in enumerate(history):
+            if entry.get("ranAt") == board.get("ranAt") and i > 0:
+                drifted_from_previous = config_module.measurement_changes(
+                    measurement, history[i - 1].get("measurement"))
+                break
+        # A pre-fingerprint run has nothing to show and nothing to compare —
+        # reported as unknown, never as "unchanged".
         return render_template("run.html", board=board, tiers=tiers, filename=p.name,
                               project=project, price_sensitivity=price_sensitivity,
-                              tc_inputs=tc_inputs, detail_by_model=detail_by_model)
+                              tc_inputs=tc_inputs, detail_by_model=detail_by_model,
+                              measurement=measurement,
+                              measurement_labels=config_module.MEASUREMENT_LABELS,
+                              drifted_from_previous=drifted_from_previous)
 
     app.add_url_rule("/run/<path:filename>", "run_detail", run_detail)
     app.add_url_rule("/projects/<project>/run/<path:filename>", "run_detail", run_detail)
@@ -893,6 +976,14 @@ def create_app() -> Flask:
                                     tier=tier, limit=limit, error=str(exc)), code=303)
         pending = (result.get("state") or {}).get("pending")
         flash = f"benched {len(candidates)} candidate(s)"
+        changed = result.get("measurement_changes")
+        if changed:
+            # SAID AT THE MOMENT IT HAPPENS. Someone who just edited a rubric
+            # and re-ran is the one person who can still remember why the
+            # number moved; telling them here is worth more than a broken
+            # line they find three runs later.
+            flash += (f" — NOT comparable to the previous run: "
+                      f"{', '.join(changed)} changed since then")
         stats = result.get("cache_stats")
         if stats and stats.get("hits"):
             # SAID OUT LOUD, not buried in the run file. A person who ticked

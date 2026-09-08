@@ -100,6 +100,10 @@ def build(bench_result: dict, catalogue: Optional[dict] = None,
     return {
         "ranAt": bench_result.get("ranAt"), "useCase": bench_result.get("useCase"),
         "judge": bench_result.get("judge"),
+        # Carried through from the bench so the board — the thing saved, put
+        # in history, and drawn as a trend — knows what measuring stick
+        # produced its numbers. See `config.measurement`.
+        "measurement": bench_result.get("measurement"),
         "tiers": {n: tiers[n] for n in TIER_ORDER if n in tiers},
         "shortlists": shortlists, "noise": NOISE,
     }

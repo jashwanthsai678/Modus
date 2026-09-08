@@ -16,6 +16,7 @@ from typing import Optional
 from . import bench as bench_module
 from . import cache as cache_module
 from . import catalogue as catalogue_module
+from . import config as config_module
 from . import guardrails as guardrails_module
 from . import notify as notify_module
 from . import rank as rank_module
@@ -121,6 +122,13 @@ async def execute(uc: UseCase, cat: dict, candidates: list, *,
         json.dumps({"bench": result, "board": board}, indent=2, ensure_ascii=False),
         encoding="utf-8")
 
+    # WHAT CHANGED SINCE THE LAST RUN, read BEFORE this run is appended to
+    # history — afterwards the newest entry is this run itself and there is
+    # nothing left to compare against.
+    prior = state_module.load(uc.name, state_root).get("history") or []
+    measurement_changes = config_module.measurement_changes(
+        board.get("measurement"), (prior[-1] if prior else {}).get("measurement"))
+
     new_state = state_module.record_run(uc.name, board, root=state_root)
     notified = False
     if new_state.get("pending"):
@@ -136,4 +144,5 @@ async def execute(uc: UseCase, cat: dict, candidates: list, *,
 
     return {"stamp": stamp, "board": board, "state": new_state, "report": text,
             "out_path": out_path, "notified": notified,
-            "cache_stats": result.get("cacheStats")}
+            "cache_stats": result.get("cacheStats"),
+            "measurement_changes": measurement_changes}

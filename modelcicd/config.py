@@ -18,6 +18,8 @@ environment (`OPENROUTER_API_KEY`, `SMTP_*`), never from a file that gets
 committed to a repo — a config checked into version control with a key in it is
 a leaked key, and open-source users will absolutely commit their config.
 """
+import hashlib
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -298,6 +300,99 @@ def load(path) -> UseCase:
         estimated_calls_per_day=int(calls_per_day) if calls_per_day else None,
         input_structure=raw.get("inputStructure"), output_structure=raw.get("outputStructure"),
         path=p)
+
+
+# ── What was measured — so two scores can't be silently compared ──────────
+#
+# THE PROBLEM THIS SOLVES, OBSERVED IN THIS PROJECT'S OWN DATA. `agent_router`
+# scored 2.25, then 4.45. Nothing about the models changed between those two
+# runs; deterministic checks were added to the use case, so the second number
+# was produced by a different measuring stick. Both points sit on the same
+# trend line, and a trend line is exactly what a person reads as "this got
+# better". Without a fingerprint the history silently lies, and it lies more
+# every time someone improves their rubric — which is a thing this tool
+# actively encourages them to do.
+#
+# COMPONENTS, NOT ONE OPAQUE HASH. Knowing "something changed" sends someone
+# diffing YAML by hand. Knowing "the rubric changed but the test cases
+# didn't" is immediately actionable, and it's the difference between a
+# warning people read and a warning people learn to click past.
+
+def _hash(payload) -> str:
+    """A short, stable digest. Twelve hex characters — long enough that a
+    collision isn't a practical concern for one use case's ~50-run history,
+    short enough to print on a leaderboard next to a score."""
+    blob = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+
+
+def measurement(uc: UseCase) -> dict:
+    """A fingerprint of everything that decides what a score MEANS.
+
+    IN HERE: the system prompt (what the model was asked), the test cases
+    (what it was asked about), the rubric and the deterministic checks (how
+    the answer was scored), and the judge model (who scored it — a different
+    judge is a different scale, even against an identical rubric).
+
+    DELIBERATELY NOT IN HERE: the guardrails, the tiers, the price ceilings,
+    the notify threshold, the schedule. Those decide WHICH CANDIDATES get
+    measured, not how. Widening a price ceiling adds rows to a leaderboard;
+    it doesn't make the existing rows mean something different, so folding
+    it in would cry wolf on every routine edit and teach people to ignore
+    the warning that matters.
+    """
+    # ONE CONCEPT PER COMPONENT, which took a second attempt to get right.
+    # Folding each test case's rubric into the `testCases` component seemed
+    # natural — that's where an override is authored — but `config.load`
+    # gives every test case the use-case rubric when it has no override of
+    # its own. So editing the shared rubric moved BOTH components and the
+    # report read "the test cases and the rubric changed" for an edit that
+    # touched one line of rubric. True, and useless.
+    #
+    # So: `testCases` is WHAT WAS ASKED (id, input, reference). `rubric` is
+    # HOW IT WAS JUDGED, shared and per-test-case together. `checks` is
+    # WHAT WAS VERIFIED, likewise. Each edit now moves exactly one.
+    def criteria(items):
+        return [[c.id, c.description, c.weight] for c in items]
+
+    def checks_of(items):
+        return [[a.type, a.value, a.path, a.weight, a.required, a.negate,
+                 a.case_sensitive] for a in items]
+
+    rubric = _hash([criteria(uc.rubric),
+                    [[tc.id, criteria(tc.rubric)] for tc in uc.test_cases]])
+    checks = _hash([checks_of(uc.assertions),
+                    [[tc.id, checks_of(tc.assertions)] for tc in uc.test_cases]])
+    cases = _hash([[tc.id, tc.input, tc.reference] for tc in uc.test_cases])
+    prompt = _hash(uc.system_prompt)
+    parts = {"rubric": rubric, "checks": checks, "testCases": cases,
+             "prompt": prompt, "judge": _hash(uc.judge_model)}
+    return {**parts, "combined": _hash(parts), "testCaseCount": len(uc.test_cases)}
+
+
+# Which component labels read as what, when a run is compared to the one
+# before it. Kept next to `measurement` so a new component can't be added
+# without a name to report it under.
+MEASUREMENT_LABELS = {
+    "prompt": "the system prompt",
+    "testCases": "the test cases",
+    "rubric": "the rubric",
+    "checks": "the deterministic checks",
+    "judge": "the judge model",
+}
+
+
+def measurement_changes(current: Optional[dict], previous: Optional[dict]) -> list:
+    """Which parts of the measuring stick moved between two runs, in words.
+
+    Returns [] when they match, when either side is missing (a run recorded
+    before fingerprints existed can't be compared — and saying nothing is
+    honest, where claiming "unchanged" would not be), and naturally when
+    only `testCaseCount` differs, which `testCases` already covers."""
+    if not current or not previous:
+        return []
+    return [label for key, label in MEASUREMENT_LABELS.items()
+            if current.get(key) and previous.get(key) and current[key] != previous[key]]
 
 
 def describe(uc: UseCase) -> str:

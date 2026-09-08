@@ -71,12 +71,7 @@
       <div class="stat-label">Best score per run</div>
       <div class="stat-value">
         {% if row.sparkline %}
-        <svg width="{{ row.sparkline.width }}" height="{{ row.sparkline.height }}" role="img" class="sparkline">
-          <title>best score found per run: {{ row.sparkline.title }}</title>
-          <polyline points="{{ row.sparkline.line }}" fill="none" style="stroke: var(--muted)"
-                    stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
-          <circle cx="{{ row.sparkline.last_x }}" cy="{{ row.sparkline.last_y }}" r="4" style="fill: var(--accent-bright)" />
-        </svg>
+        {% with sp = row.sparkline %}{% include "_sparkline.html" %}{% endwith %}
         {% else %}<span class="is-empty">needs 2+ runs</span>{% endif %}
       </div>
     </div>

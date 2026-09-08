@@ -9,6 +9,7 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Optional
 
+from . import config as config_module
 from . import judge as judge_module
 from . import sandbox as sandbox_module
 from .config import UseCase
@@ -116,6 +117,10 @@ async def run(candidates: list, uc: UseCase, *, judge_model: Optional[str] = Non
         "schema": 1, "ranAt": datetime.now(timezone.utc).isoformat(),
         "useCase": uc.name, "judge": judge_model,
         "testCases": len(uc.test_cases), "candidates": len(candidates),
+        # WHAT WAS MEASURED, recorded with the result. A score is only
+        # comparable to another score produced by the same prompt, test
+        # cases, rubric, checks and judge — see `config.measurement`.
+        "measurement": config_module.measurement(uc),
         "cacheStats": cache.stats() if cache is not None else None,
         "results": list(results),
     }

@@ -17,12 +17,7 @@
     <td>{{ (c.history or [])|length }}</td>
     <td>
       {% if c.sparkline %}
-      <svg width="{{ c.sparkline.width }}" height="{{ c.sparkline.height }}" role="img" class="sparkline">
-        <title>best score found per run: {{ c.sparkline.title }}</title>
-        <polyline points="{{ c.sparkline.line }}" fill="none" style="stroke: var(--muted)"
-                  stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
-        <circle cx="{{ c.sparkline.last_x }}" cy="{{ c.sparkline.last_y }}" r="4" style="fill: var(--accent-bright)" />
-      </svg>
+      {% with sp = c.sparkline %}{% include "_sparkline.html" %}{% endwith %}
       {% else %}
       <span class="muted">not enough runs yet</span>
       {% endif %}

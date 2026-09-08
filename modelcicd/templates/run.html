@@ -5,6 +5,42 @@
 <p class="muted">judge {{ board.judge }} &middot; ran {{ board.ranAt }} &middot;
   <a class="link" href="{{ scoped_url('usecase', project=project, name=board.useCase) }}">back to use case</a></p>
 
+{% if drifted_from_previous %}
+{# THE WARNING THAT MAKES THE HISTORY HONEST. This score and the one before
+   it came from different measuring sticks, so reading them as a trend
+   asserts an improvement nobody measured. #}
+<div class="card flash-error">
+  <p style="margin:0;"><strong>Not comparable to the previous run.</strong>
+    {{ drifted_from_previous|join(', ')|capitalize }} changed between that run and this one,
+    so these scores are not on the same scale. The trend line breaks here rather than joining
+    the two — a change in the rubric or the checks moves the number without any model
+    behaving differently.</p>
+</div>
+{% endif %}
+
+{% if measurement %}
+<div class="panel">
+  <div class="panel-head">
+    <h3>What was measured</h3>
+    <span class="muted mono">{{ measurement.combined }}</span>
+  </div>
+  <p class="muted" style="margin:0 0 var(--sp-3);">A fingerprint of the measuring stick, not the
+    result. Two runs sharing this id are comparable; two that don't are not, however similar the
+    scores look.</p>
+  <div class="stat-grid">
+    {% for key, label in measurement_labels.items() %}
+    <div>
+      <div class="stat-label">{{ label }}</div>
+      <div class="stat-value mono">{{ measurement.get(key) or '—' }}</div>
+      {% if key == 'testCases' and measurement.testCaseCount %}
+      <div class="stat-note">{{ measurement.testCaseCount }} test case(s)</div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 <div class="card">
   <form method="get">
     <label for="price_sensitivity">how much should price count? <span class="hint">(0 = quality only,

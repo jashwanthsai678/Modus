@@ -3,6 +3,7 @@ or produce a wrong promotion actually live. No model call, no network.
 
     python -m modelcicd.tests.test_modelcicd
 """
+import json
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -1255,6 +1256,331 @@ def test_dig_reads_a_nested_field() -> None:
         check("missing field raises", False)
     except KeyError:
         check("missing field raises", True)
+
+
+# ── measurement fingerprint: two scores can't be silently compared ──────────
+#
+# THE BUG THESE GUARD, OBSERVED IN THIS PROJECT'S OWN DATA. `agent_router`
+# scored 2.25, then 4.45. No model changed between those runs — deterministic
+# checks were added to the use case, so the second number came from a
+# different measuring stick. Both points sat on one trend line, and a trend
+# line is exactly what a person reads as "this got better".
+
+def _uc_with(**overrides):
+    """The example use case, with one thing changed — so a test can assert
+    that changing exactly that moves exactly the right fingerprint."""
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+    for key, value in overrides.items():
+        setattr(uc, key, value)
+    return uc
+
+
+def test_the_fingerprint_moves_only_for_things_that_change_a_scores_meaning() -> None:
+    base = config.measurement(_uc_with())
+    check("stable for an unchanged use case",
+          config.measurement(_uc_with())["combined"] == base["combined"])
+
+    moved = [
+        ("prompt", _uc_with(system_prompt="something else entirely")),
+        ("rubric", _uc_with(rubric=[config.Criterion(id="x", description="y", weight=1.0)])),
+        ("judge", _uc_with(judge_model="someone/else")),
+        ("checks", _uc_with(assertions=assertions.parse(
+            [{"type": "contains", "value": "hello"}]))),
+    ]
+    for component, uc in moved:
+        m = config.measurement(uc)
+        check(f"changing {component} moves its own component",
+              m[component] != base[component], f"{component}")
+        check(f"changing {component} moves the combined hash",
+              m["combined"] != base["combined"], f"{component}")
+        # AND NOTHING ELSE MOVES. A component hash that shifts when an
+        # unrelated field changes makes the "what changed?" report useless —
+        # it would name every part every time.
+        others = [k for k in config.MEASUREMENT_LABELS if k != component]
+        check(f"changing {component} leaves the other components alone",
+              all(m[k] == base[k] for k in others),
+              f"{[k for k in others if m[k] != base[k]]}")
+
+
+def test_widening_the_guardrails_does_not_break_comparability() -> None:
+    """DELIBERATELY EXCLUDED. Price ceilings and tiers decide WHICH
+    candidates get measured, not how. Raising a ceiling adds rows to a
+    leaderboard; it doesn't make the existing rows mean anything different.
+    Folding it in would cry wolf on a routine edit and teach people to click
+    past the warning that matters."""
+    base = config.measurement(_uc_with())
+    wider = _uc_with()
+    wider.guardrails.max_price_out = 99.0
+    wider.guardrails.tiers = ["free", "paid-low", "paid-mid", "paid-high"]
+    wider.notify.min_improvement = 0.9
+    check("guardrails/tiers/notify are not part of the fingerprint",
+          config.measurement(wider)["combined"] == base["combined"])
+
+
+def test_each_edit_moves_exactly_one_component() -> None:
+    """CAUGHT ON A REAL EDIT, not in design. Folding each test case's rubric
+    into the `testCases` component seemed natural — an override is authored
+    there — but `config.load` gives every test case the use-case rubric when
+    it has none of its own. So rewording one shared criterion moved both
+    components and the report read "the test cases and the rubric changed",
+    which is true and useless. One concept per component instead: testCases
+    is what was ASKED, rubric is how it was JUDGED, checks is what was
+    VERIFIED."""
+    base = config.measurement(_uc_with())
+
+    # Rewording the shared rubric must NOT claim the test cases changed,
+    # even though every test case inherits it.
+    reworded = _uc_with()
+    reworded.rubric[0].description = "something else entirely"
+    for tc in reworded.test_cases:
+        tc.rubric = reworded.rubric          # what config.load does on load
+    m = config.measurement(reworded)
+    check("rewording the shared rubric moves the rubric component",
+          m["rubric"] != base["rubric"])
+    check("and does NOT claim the test cases changed",
+          m["testCases"] == base["testCases"], "the bug this test exists for")
+
+    # A per-test-case check belongs to `checks`, not `testCases`.
+    with_check = _uc_with()
+    with_check.test_cases[0].assertions = assertions.parse(
+        [{"type": "contains", "value": "x"}])
+    m = config.measurement(with_check)
+    check("a per-test-case check moves the checks component",
+          m["checks"] != base["checks"])
+    check("and not the test cases", m["testCases"] == base["testCases"])
+
+    # Editing an input belongs to `testCases`, and nothing else.
+    edited = _uc_with()
+    edited.test_cases[0].input = "a completely different question"
+    m = config.measurement(edited)
+    check("editing an input moves the test cases component",
+          m["testCases"] != base["testCases"])
+    check("and neither the rubric nor the checks",
+          m["rubric"] == base["rubric"] and m["checks"] == base["checks"], f"{m}")
+
+
+def test_measurement_changes_names_what_moved_in_words() -> None:
+    before = config.measurement(_uc_with())
+    after = config.measurement(_uc_with(judge_model="someone/else",
+                                        system_prompt="different"))
+    changed = config.measurement_changes(after, before)
+    check("names the judge", "the judge model" in changed, f"{changed}")
+    check("names the prompt", "the system prompt" in changed, f"{changed}")
+    check("names nothing else", len(changed) == 2, f"{changed}")
+    check("identical measurements report no change",
+          config.measurement_changes(before, before) == [])
+
+
+def test_a_run_from_before_fingerprints_is_unknown_not_unchanged() -> None:
+    """An absent fingerprint is not evidence of a matching one. Claiming
+    "unchanged" for a run recorded before this existed would be inventing
+    comparability, which is the exact failure this whole feature prevents."""
+    current = config.measurement(_uc_with())
+    check("no previous fingerprint means no claim either way",
+          config.measurement_changes(current, None) == [])
+    check("no current fingerprint means no claim either way",
+          config.measurement_changes(None, current) == [])
+    check("an empty previous entry makes no claim",
+          config.measurement_changes(current, {}) == [])
+
+
+def test_the_fingerprint_reaches_the_run_file_and_the_history_entry() -> None:
+    """It has to land in HISTORY, not just the run file — the trend chart
+    reads history, so that's the only place a fingerprint can stop two
+    differently-measured scores being drawn as one line."""
+    import asyncio
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+
+    async def fake_call_json(*a, **k):
+        return {"reply": "ok", "scores": {c.id: 4 for c in uc.rubric}}
+
+    original = client.call_json
+    sandbox.client_module.call_json = fake_call_json
+    judge.client_module.call_json = fake_call_json
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            result = asyncio.run(runner.execute(uc, {}, ["vendor/a"],
+                                                state_root=root, out_dir=root))
+            saved = json.loads(Path(result["out_path"]).read_text(encoding="utf-8"))
+            check("the run file carries it",
+                  saved["bench"]["measurement"]["combined"] ==
+                  config.measurement(uc)["combined"], f"{saved['bench'].get('measurement')}")
+            check("the board carries it",
+                  saved["board"]["measurement"]["combined"] ==
+                  config.measurement(uc)["combined"])
+            entry = (state.load(uc.name, root).get("history") or [])[-1]
+            check("the history entry carries it",
+                  entry["measurement"]["combined"] == config.measurement(uc)["combined"],
+                  f"{entry.get('measurement')}")
+            check("a first run reports no drift",
+                  result["measurement_changes"] == [], f"{result['measurement_changes']}")
+    finally:
+        sandbox.client_module.call_json = original
+        judge.client_module.call_json = original
+
+
+def test_a_run_after_a_rubric_edit_reports_the_drift() -> None:
+    """THE EXACT SEQUENCE THAT PRODUCED 2.25 THEN 4.45: run, change how
+    scoring works, run again. The second run must say so."""
+    import asyncio
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+
+    async def fake_call_json(*a, **k):
+        return {"reply": "ok", "scores": {c.id: 4 for c in uc.rubric}}
+
+    original = client.call_json
+    sandbox.client_module.call_json = fake_call_json
+    judge.client_module.call_json = fake_call_json
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            asyncio.run(runner.execute(uc, {}, ["vendor/a"], state_root=root, out_dir=root))
+            # The edit: add a deterministic check, exactly as I did to
+            # agent_router between its two runs.
+            uc.assertions = assertions.parse([{"type": "has-keys", "value": ["reply"]}])
+            second = asyncio.run(runner.execute(uc, {}, ["vendor/a"],
+                                                state_root=root, out_dir=root))
+            check("the drift is reported",
+                  "the deterministic checks" in second["measurement_changes"],
+                  f"{second['measurement_changes']}")
+            check("and only that", len(second["measurement_changes"]) == 1,
+                  f"{second['measurement_changes']}")
+    finally:
+        sandbox.client_module.call_json = original
+        judge.client_module.call_json = original
+
+
+def test_the_trend_line_breaks_where_the_measuring_stick_changed() -> None:
+    """A continuous line asserts the models improved. Where the rubric
+    changed instead, the line must not connect."""
+    from modelcicd import dashboard
+
+    def run_at(score, fingerprint):
+        return {"ranAt": "2026-01-01T00:00:00", "measurement": {"combined": fingerprint},
+                "tiers": {"free": [{"model": "m", "score": score}]}}
+
+    same = [run_at(2.0, "aaa"), run_at(3.0, "aaa"), run_at(4.0, "aaa")]
+    sp = dashboard._sparkline(dashboard._best_per_run(same))
+    check("one scale draws every edge solid",
+          len(sp["edges"]) == 2 and all(e["verified"] for e in sp["edges"]), f"{sp}")
+    check("and reports no breaks", sp["breaks"] == 0, f"{sp}")
+    check("and nothing unverified", sp["unverified"] == 0, f"{sp}")
+
+    drifted = [run_at(2.0, "aaa"), run_at(2.25, "aaa"), run_at(4.45, "bbb")]
+    sp = dashboard._sparkline(dashboard._best_per_run(drifted))
+    check("a changed rubric breaks the line", sp["breaks"] == 1, f"{sp}")
+    check("the pre-change runs stay joined", len(sp["edges"]) == 1, f"{sp}")
+    check("the edge that would span the change is not drawn at all",
+          all(e["verified"] for e in sp["edges"]), f"{sp}")
+    check("the run after the change is still drawn, as a dot",
+          len(sp["dots"]) == 1, f"{sp}")
+    check("the title explains the break", "not on the same scale" in sp["title"],
+          sp["title"])
+
+
+def test_an_unknown_fingerprint_is_dashed_not_gapped() -> None:
+    """MY OWN MISTAKE, CAUGHT ON REAL HISTORY. A gap asserts "the
+    measurement changed"; a solid line asserts "it didn't". For a run
+    recorded before fingerprints existed neither is true, so it gets a
+    dashed edge, which asserts nothing.
+
+    Rendering these as gaps looked rigorous and was just wrong: with four
+    pre-fingerprint runs in real history it produced four isolated dots and
+    four "breaks", which reads as noise and teaches people to ignore breaks
+    altogether. Unknown never being resolved favorably does not mean it gets
+    resolved unfavorably — it means it doesn't get resolved."""
+    from modelcicd import dashboard
+    history = [
+        {"tiers": {"free": [{"model": "m", "score": 2.0}]}},                 # pre-fingerprint
+        {"tiers": {"free": [{"model": "m", "score": 2.5}]}},                 # pre-fingerprint
+        {"measurement": {"combined": "aaa"}, "tiers": {"free": [{"model": "m", "score": 4.0}]}},
+        {"measurement": {"combined": "aaa"}, "tiers": {"free": [{"model": "m", "score": 4.2}]}},
+    ]
+    sp = dashboard._sparkline(dashboard._best_per_run(history))
+    check("no hard break is claimed where nothing is known", sp["breaks"] == 0, f"{sp}")
+    check("every edge is still drawn", len(sp["edges"]) == 3, f"{sp}")
+    check("two of them dashed", sp["unverified"] == 2, f"{sp}")
+    check("the one between two fingerprinted runs is solid",
+          sp["edges"][-1]["verified"] is True, f"{sp['edges']}")
+    check("no run is orphaned into a dot", sp["dots"] == [], f"{sp}")
+    check("the title says comparability is unknown, not confirmed",
+          "unknown, not confirmed" in sp["title"], sp["title"])
+
+
+def test_the_run_page_warns_when_the_previous_run_used_a_different_stick() -> None:
+    """Covers `run_detail`'s history lookup, which is the fiddly part: it
+    finds THIS run's entry in the use case's history by `ranAt` and compares
+    against the one before it. Read from history rather than the adjacent
+    run file, so it still works after old run files are cleaned up."""
+    from modelcicd import dashboard
+    tmp = Path(tempfile.mkdtemp())
+    original = project.DEFAULT_DIR
+    project.DEFAULT_DIR = tmp / "projects"
+    try:
+        project.create("Drift", slug="drift", notify_email="t@example.com")
+        first, second = "2026-01-01T00:00:00+00:00", "2026-01-02T00:00:00+00:00"
+        old_fp = {"combined": "aaa", "rubric": "r1", "checks": "c1",
+                  "testCases": "t1", "prompt": "p1", "judge": "j1"}
+        new_fp = {**old_fp, "combined": "bbb", "rubric": "r2"}
+
+        state_dir = project.state_dir("drift")
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "router.json").write_text(json.dumps({
+            "useCase": "router", "approvedModel": None, "history": [
+                {"ranAt": first, "measurement": old_fp,
+                 "tiers": {"free": [{"model": "m", "score": 4.45}]}},
+                {"ranAt": second, "measurement": new_fp,
+                 "tiers": {"free": [{"model": "m", "score": 4.40}]}},
+            ]}), encoding="utf-8")
+
+        out_dir = project.out_dir("drift")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # Every key `rank.build` actually puts on a row — a partial row here
+        # would fail the template for reasons unrelated to what's tested.
+        row = {"model": "m", "score": 4.45, "tier": "free", "price_out": 0.0,
+               "context": 128000, "wouldShipRate": 1.0, "counts": {"ok": 1},
+               "error": None, "isApproved": False, "rateLimited": False,
+               "rateLimitNote": None, "judgeSpread": None,
+               "candidateSpread": None, "assertions": None}
+        for stamp, ran_at, fp in [("a", first, old_fp), ("b", second, new_fp)]:
+            (out_dir / f"{stamp}_router.json").write_text(json.dumps({
+                "bench": {"results": [], "measurement": fp},
+                "board": {"useCase": "router", "ranAt": ran_at, "judge": "j",
+                          "measurement": fp, "shortlists": {"free": []},
+                          "noise": 0.25, "tiers": {"free": [dict(row)]}}}),
+                encoding="utf-8")
+
+        app = dashboard.create_app()
+        app.config["TESTING"] = True
+        client_ = app.test_client()
+
+        after = client_.get("/projects/drift/run/b_router.json").get_data(as_text=True)
+        check("the second run warns", "Not comparable to the previous run" in after)
+        check("and names the rubric", "the rubric" in after)
+        check("and shows the fingerprint", "bbb" in after, "expected the combined hash")
+
+        before = client_.get("/projects/drift/run/a_router.json").get_data(as_text=True)
+        check("the FIRST run does not warn — nothing precedes it",
+              "Not comparable to the previous run" not in before)
+        check("but still shows what it measured", "What was measured" in before)
+    finally:
+        project.DEFAULT_DIR = original
+
+
+def test_a_run_that_scored_nothing_contributes_no_point() -> None:
+    """Pre-existing behavior that must survive the rewrite — a run where
+    every candidate failed contributes no point rather than a fabricated
+    zero, which would read as a catastrophic regression."""
+    from modelcicd import dashboard
+    history = [
+        {"measurement": {"combined": "aaa"}, "tiers": {"free": [{"model": "m", "score": 4.0}]}},
+        {"measurement": {"combined": "aaa"}, "tiers": {"free": [{"model": "m", "score": None}]}},
+        {"measurement": {"combined": "aaa"}, "tiers": {"free": [{"model": "m", "score": 4.2}]}},
+    ]
+    points = dashboard._best_per_run(history)
+    check("the unscoreable run is skipped, not zeroed", len(points) == 2, f"{points}")
+    check("no fabricated zero", all(p["score"] > 0 for p in points), f"{points}")
 
 
 # ── assertions: decided in code, so nothing here needs a model ──────────────

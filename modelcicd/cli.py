@@ -431,6 +431,12 @@ def cmd_run(args) -> int:
     print()
     print(result["report"])
 
+    changed = result.get("measurement_changes")
+    if changed:
+        print(f"\nNOT COMPARABLE TO THE PREVIOUS RUN: {', '.join(changed)} changed "
+              f"since then, so this score was produced by a different measuring "
+              f"stick. The trend line breaks here rather than joining the two.")
+
     stats = result.get("cache_stats")
     if stats and stats.get("hits"):
         print(f"\ncache: {stats['hits']} of {stats['hits'] + stats['misses']} call(s) "
