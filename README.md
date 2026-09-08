@@ -282,6 +282,76 @@ command above also works as `modelcicd <command>` instead of
 
 ---
 
+## Deterministic checks — the half of "is this good?" that needs no model
+
+A rubric judged by an LLM is the right tool for *"is this reply helpful and
+on-brand"*. It is the wrong tool for *"does the response have an `intent`
+key"*, because that question has an answer, and asking a model to guess at it
+puts noise into something that could have been certain.
+
+So anything decidable in code is decided in code, free, before a judge call
+is made — and the result blends into the same 1–5 score:
+
+```yaml
+# a router whose integration reads response.team
+assertions:
+  - type: has-keys
+    value: [team]
+    required: true                        # nothing to route on — don't even judge it
+  - type: regex
+    value: ^(billing|technical|general)$
+    path: team
+    weight: 2.0
+
+testCases:
+  - id: billing_double_charge
+    input: I was charged twice last month and I need a refund.
+    assertions:
+      - type: equals                      # ADDS to the shared checks above
+        value: billing
+        path: team
+```
+
+That second check is the point. A model answering `{"team": "Billing
+Department"}` scores full marks on *"is the reply clear and on-topic?"* and
+breaks the router anyway. No rubric wording catches it; a regex does.
+
+**Four types, deliberately** — `contains`, `equals`, `regex`, `has-keys`,
+each also as `not-<type>`. This is not a metric library and isn't trying to
+become one: no embedding similarity, no BLEU, no model-graded assertions
+(that's what the rubric is for). Four checks cover the failures that actually
+sink an integration — a required field went missing, a forbidden phrase came
+back, a format changed shape.
+
+| Option | Meaning |
+|---|---|
+| `path` | A field in the JSON response (`intent`, `data.reply`). Omit to check the whole answer. |
+| `weight` | How much this counts in the blended 1–5 score, alongside the rubric's own weights. |
+| `required` | Failing it disqualifies the answer **and skips its judge call** — no money spent scoring the prose of something already out. |
+| `caseSensitive` | Off by default. Against model prose, `Refund` vs `refund` is almost never the difference you meant to catch. |
+
+**A missing `path` fails; it does not skip.** Same rule the price guardrails
+follow — an unknown is never resolved in the candidate's favor, because the
+permissive version is how something broken gets quietly promoted.
+
+**Test-case checks ADD to the use case's, unlike the rubric, which replaces.**
+That difference is deliberate: two rubrics are competing scales for one
+judgement, so a test case's own has to replace the default. Two assertions are
+independent facts and combine fine. Under replace-semantics a shared "must
+have a `team` key" would silently vanish from exactly the test cases whose
+answers were pinned down most precisely.
+
+**A bad check is refused at load, not mid-run.** An unparseable regex or a
+typo'd type found thirty candidates into a bench has already cost the money
+the check was meant to save, so `config.load` and the wizard both run the
+real parser and name the file and test case at fault.
+
+Set them per feature in the wizard, or once for a whole project under Project
+Defaults. Every run's saved file records each check, its verdict, and *why* —
+the part of a score a reader can verify without trusting the judge at all.
+
+---
+
 ## Response caching — so iterating on a rubric doesn't re-buy the answers
 
 Changing a rubric changes how answers are **scored**, not what the answers
@@ -381,6 +451,7 @@ modelcicd/
   cache.py           content-addressed model responses, so a rubric edit doesn't re-buy the answers
   endpoint_client.py the one place this project calls a use case's OWN live endpoint
   sandbox.py         run one candidate (through ITS OWN platform) or the live endpoint, against the test cases
+  assertions.py      deterministic checks on an answer — decided in code, no model, free
   judge.py           blind, pinned-judge scoring against the use case's rubric
   bench.py           orchestrates sandbox + judge across all candidates + the endpoint
   rank.py            builds the per-tier leaderboard

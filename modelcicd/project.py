@@ -48,6 +48,12 @@ DEFAULT_PROVIDERS = ["openrouter"]
 # `wizard.defaults_from_project`, always still editable per feature.
 DEFAULT_PROJECT_DEFAULTS = {
     "rubric": [],
+    # Deterministic checks every feature in this project starts with (see
+    # `assertions.py`). Most projects share the same integration contract —
+    # "the response must have an `intent` key", "never say 'as an AI'" — so
+    # re-typing it per feature is exactly the duplication these defaults
+    # exist to remove.
+    "assertions": [],
     "maxPriceIn": 0.50, "maxPriceOut": 3.00, "minContext": 32_000,
     "requireJson": True, "allowFree": True, "tiers": ["free", "paid-low", "paid-mid"],
     "judgeModel": None,       # None here means "use config.DEFAULT_JUDGE_MODEL"

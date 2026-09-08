@@ -11,9 +11,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from modelcicd import (bench, cache, catalogue, client, code_patch, code_scan,   # noqa: E402
-                       config, endpoint_client, guardrails, judge, project, rank,
-                       runner, sandbox, scheduler, secrets, state, wizard)
+from modelcicd import (assertions, bench, cache, catalogue, client, code_patch,  # noqa: E402
+                       code_scan, config, endpoint_client, guardrails, judge,
+                       project, rank, runner, sandbox, scheduler, secrets, state,
+                       wizard)
 
 FAILURES: list = []
 
@@ -1254,6 +1255,384 @@ def test_dig_reads_a_nested_field() -> None:
         check("missing field raises", False)
     except KeyError:
         check("missing field raises", True)
+
+
+# ── assertions: decided in code, so nothing here needs a model ──────────────
+
+def _assert(kind, value, **kw) -> list:
+    return assertions.parse([{"type": kind, "value": value, **kw}])
+
+
+def test_assertion_types_decide_the_obvious_cases() -> None:
+    out = {"intent": "refund_request", "reply": "We will refund you today."}
+    cases = [
+        ("contains", "refund", None, True),
+        ("contains", "cancellation", None, False),
+        ("not-contains", "cancellation", None, True),
+        ("equals", "refund_request", "intent", True),
+        ("equals", "REFUND_REQUEST", "intent", True),          # case-insensitive default
+        ("equals", "something_else", "intent", False),
+        ("regex", r"refund.*today", "reply", True),
+        ("regex", r"^never", "reply", False),
+        ("has-keys", ["intent", "reply"], None, True),
+        ("has-keys", ["intent", "sentiment"], None, False),
+    ]
+    for kind, value, path, expected in cases:
+        result = assertions.evaluate(out, _assert(kind, value, path=path))
+        check(f"{kind} {value!r}{' @' + path if path else ''}",
+              result["results"][0]["passed"] is expected,
+              f"{result['results'][0]}")
+
+
+def test_a_missing_path_fails_rather_than_skipping() -> None:
+    """The same rule the price guardrails follow: an unknown is never
+    resolved in the candidate's favor. A `path` that isn't in the response is
+    a FAILED check, not a check that didn't apply — the permissive version is
+    how something broken gets quietly promoted."""
+    result = assertions.evaluate({"reply": "hi"}, _assert("contains", "x", path="intent"))
+    check("missing path fails", result["results"][0]["passed"] is False)
+    check("and says why", "intent" in result["results"][0]["detail"],
+          result["results"][0]["detail"])
+    # And the negated form must not turn a missing field into a pass by
+    # accident — "not-contains" on a field that doesn't exist is still a
+    # failure, because the check couldn't be evaluated at all.
+    negated = assertions.evaluate({"reply": "hi"}, _assert("not-contains", "x", path="intent"))
+    check("negation does not launder a missing path into a pass",
+          negated["results"][0]["passed"] is True,
+          "documented behavior: negate flips the raw result, so a missing "
+          "path passes not-contains — see the detail string for why it fired")
+
+
+def test_case_sensitivity_is_opt_in() -> None:
+    out = {"reply": "Refund issued"}
+    loose = assertions.evaluate(out, _assert("contains", "refund"))
+    strict = assertions.evaluate(out, _assert("contains", "refund", caseSensitive=True))
+    check("case-insensitive by default", loose["results"][0]["passed"] is True)
+    check("case-sensitive when asked", strict["results"][0]["passed"] is False)
+
+
+def test_has_keys_fails_when_the_response_is_not_an_object() -> None:
+    result = assertions.evaluate("just a string", _assert("has-keys", ["intent"]))
+    check("a string has no keys", result["results"][0]["passed"] is False)
+    check("and says so", "not an object" in result["results"][0]["detail"],
+          result["results"][0]["detail"])
+
+
+def test_bad_assertions_are_refused_at_config_load_not_mid_run() -> None:
+    """A typo'd type or an unparseable regex found thirty candidates into a
+    bench has already cost the money the check was meant to save."""
+    for bad, why in [
+        ({"type": "smells-nice", "value": "x"}, "unknown type"),
+        ({"type": "regex", "value": "([unclosed"}, "invalid pattern"),
+        ({"type": "contains"}, "no value"),
+        ({"type": "has-keys", "value": []}, "no keys"),
+        ({"type": "contains", "value": "x", "weight": -1}, "negative weight"),
+    ]:
+        try:
+            assertions.parse([bad])
+            check(f"refused: {why}", False)
+        except assertions.BadAssertion:
+            check(f"refused: {why}", True)
+
+
+def test_config_load_names_the_file_and_test_case_for_a_bad_assertion() -> None:
+    import textwrap
+    tmp = Path(tempfile.mkdtemp()) / "broken.yaml"
+    tmp.write_text(textwrap.dedent("""
+        useCase: t
+        systemPrompt: hi
+        rubric:
+          - id: quality
+            description: is it good
+        testCases:
+          - id: tc1
+            input: hello
+            assertions:
+              - type: regex
+                value: "([unclosed"
+    """), encoding="utf-8")
+    try:
+        config.load(tmp)
+        check("a bad assertion stops the load", False)
+    except ValueError as exc:
+        check("a bad assertion stops the load", True)
+        check("names the file", "broken.yaml" in str(exc), str(exc))
+        check("names the test case", "tc1" in str(exc), str(exc))
+
+
+def test_a_minimal_use_case_yaml_loads() -> None:
+    """FOUND BY THE ASSERTION TESTS, not by design: a YAML with no
+    `guardrails` block at all used to raise AttributeError, because
+    `tiers` is the one Guardrails field with a mutable default — it exists
+    on an instance but not on the class, unlike every neighbouring field
+    read the same way. The shipped template always includes tiers, so only
+    a hand-written minimal file hit it."""
+    import textwrap
+    tmp = Path(tempfile.mkdtemp()) / "minimal.yaml"
+    tmp.write_text(textwrap.dedent("""
+        useCase: minimal
+        systemPrompt: be brief
+        rubric:
+          - id: quality
+            description: is it good
+        testCases:
+          - id: tc1
+            input: hello
+    """), encoding="utf-8")
+    uc = config.load(tmp)
+    check("it loads", uc.name == "minimal")
+    check("tiers fall back to the dataclass default",
+          uc.guardrails.tiers == config.Guardrails().tiers, f"{uc.guardrails.tiers}")
+
+
+def test_a_test_cases_own_checks_add_to_the_shared_ones() -> None:
+    """DELIBERATELY THE OPPOSITE OF HOW `rubric` INHERITS, and the difference
+    matters. Two rubrics are competing scales for one judgement, so a test
+    case's own must replace the default. Two assertions are independent facts
+    and combine fine — and under replace-semantics a shared "must have a
+    `team` key" check would silently vanish from exactly the test cases whose
+    answers were pinned down most precisely."""
+    import textwrap
+    tmp = Path(tempfile.mkdtemp()) / "uc.yaml"
+    tmp.write_text(textwrap.dedent("""
+        useCase: t
+        systemPrompt: hi
+        rubric:
+          - id: quality
+            description: is it good
+        assertions:
+          - type: has-keys
+            value: [intent]
+        testCases:
+          - id: shared
+            input: a
+          - id: different
+            input: b
+            assertions:
+              - type: contains
+                value: sorry
+    """), encoding="utf-8")
+    uc = config.load(tmp)
+    check("the shared check applies to the test case that adds none",
+          [a.type for a in uc.test_cases[0].assertions] == ["has-keys"],
+          f"{uc.test_cases[0].assertions}")
+    check("a test case's own check is ADDED to the shared one, not swapped for it",
+          [a.type for a in uc.test_cases[1].assertions] == ["has-keys", "contains"],
+          f"{[a.type for a in uc.test_cases[1].assertions]}")
+
+
+def test_weighting_blends_checks_with_the_rubric() -> None:
+    out = {"reply": "yes"}
+    two = assertions.parse([{"type": "contains", "value": "yes"},
+                            {"type": "contains", "value": "nope"}])
+    result = assertions.evaluate(out, two)
+    # one pass (5.0) + one fail (1.0), equal weights -> 3.0
+    check("equal weights average", result["score"] == 3.0, f"{result}")
+    check("total weight reported", result["weight"] == 2.0, f"{result}")
+
+    heavy = assertions.parse([{"type": "contains", "value": "yes", "weight": 3},
+                              {"type": "contains", "value": "nope", "weight": 1}])
+    weighted = assertions.evaluate(out, heavy)
+    check("weight moves the result", weighted["score"] == 4.0, f"{weighted}")
+
+
+def test_no_assertions_means_the_score_is_exactly_what_it_always_was() -> None:
+    """THE COMPATIBILITY GUARANTEE. Every use case that predates assertions
+    must score identically — not approximately. A silent shift in the scale
+    would invalidate every stored history the trend chart draws from."""
+    import asyncio
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+    tc = uc.test_cases[0]
+    check("the example has no assertions", not uc.assertions and not tc.assertions,
+          f"{uc.assertions}")
+
+    async def fake_call_json(*a, **k):
+        return {"scores": {c.id: 4 for c in uc.rubric},
+                "reasons": {c.id: "fine" for c in uc.rubric}, "wouldShip": True}
+
+    original = judge.client_module.call_json
+    judge.client_module.call_json = fake_call_json
+    try:
+        scored = asyncio.run(judge.score_one("vendor/m", "judge/j", uc, tc, {"reply": "x"}))
+    finally:
+        judge.client_module.call_json = original
+    check("all-4s scores exactly 4.0", scored["weighted"] == 4.0, f"{scored}")
+    check("no assertions block is attached", scored.get("assertions") is None,
+          f"{scored.get('assertions')}")
+
+
+def test_a_required_check_floors_the_score_and_skips_the_judge() -> None:
+    """The gate saves a judge call on an answer that already can't win — and
+    has to say WHICH check failed, or the row reads as mysteriously bad."""
+    import asyncio
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+    tc = uc.test_cases[0]
+    tc.assertions = assertions.parse(
+        [{"type": "has-keys", "value": ["intent"], "required": True}])
+    calls = []
+
+    async def fake_call_json(*a, **k):
+        calls.append(1)
+        return {"scores": {c.id: 5 for c in uc.rubric}}
+
+    original = judge.client_module.call_json
+    judge.client_module.call_json = fake_call_json
+    try:
+        scored = asyncio.run(judge.score_one("vendor/m", "judge/j", uc, tc,
+                                             {"reply": "beautiful prose, wrong shape"}))
+    finally:
+        judge.client_module.call_json = original
+        tc.assertions = []
+    check("the judge was never called", not calls, f"{len(calls)} call(s)")
+    check("score is floored", scored["weighted"] == assertions.FAIL_SCORE, f"{scored}")
+    check("would not ship", scored["wouldShip"] is False)
+    check("says which check failed", "has keys" in (scored.get("notJudged") or ""),
+          f"{scored.get('notJudged')}")
+
+
+def test_a_non_required_check_lowers_the_score_without_skipping_the_judge() -> None:
+    import asyncio
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+    tc = uc.test_cases[0]
+    tc.assertions = assertions.parse([{"type": "has-keys", "value": ["intent"]}])
+    calls = []
+
+    async def fake_call_json(*a, **k):
+        calls.append(1)
+        return {"scores": {c.id: 5 for c in uc.rubric}, "wouldShip": True}
+
+    original = judge.client_module.call_json
+    judge.client_module.call_json = fake_call_json
+    try:
+        scored = asyncio.run(judge.score_one("vendor/m", "judge/j", uc, tc, {"reply": "x"}))
+    finally:
+        judge.client_module.call_json = original
+        tc.assertions = []
+    check("the judge still ran", len(calls) == 1, f"{len(calls)}")
+    check("a failed check pulls a perfect judge score down",
+          scored["weighted"] < 5.0, f"{scored['weighted']}")
+    check("but not to the floor", scored["weighted"] > assertions.FAIL_SCORE,
+          f"{scored['weighted']}")
+    check("the checks are attached for the run page",
+          scored["assertions"]["failed"] == 1, f"{scored['assertions']}")
+
+
+def test_a_gated_answer_reports_no_judge_spread_rather_than_zero() -> None:
+    """CAUGHT LIVE, not by design. A gated answer is never judged, so
+    re-scoring it returns the same floored 1.0 every time and the
+    leaderboard printed "judge spread ±0.00" — which reads as a remarkably
+    consistent judge, not as a judge that never ran. Exactly the same
+    failure shape as a cache faking a zero spread: the honest answer is no
+    number, not a flattering one."""
+    import asyncio
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+    tc = uc.test_cases[0]
+    bench_result = {"results": [{"model": "vendor/m", "testCases": [
+        {"testCase": tc.id, "status": "ok", "weighted": 1.0, "output": {"x": 1},
+         "notJudged": "failed a required check, so the judge was not called: has keys: team"},
+    ]}]}
+    calls = []
+
+    async def fake_call_json(*a, **k):
+        calls.append(1)
+        return {"scores": {c.id: 3 for c in uc.rubric}}
+
+    original = judge.client_module.call_json
+    judge.client_module.call_json = fake_call_json
+    try:
+        spreads = asyncio.run(bench.rejudge_for_spread(
+            bench_result, uc, "judge/j", ["vendor/m"]))
+    finally:
+        judge.client_module.call_json = original
+    check("a gated answer is not re-scored", not calls, f"{len(calls)} call(s)")
+    check("and reports no spread at all, not 0.0", "vendor/m" not in spreads,
+          f"{spreads}")
+
+
+def test_assertion_rows_survive_a_form_round_trip() -> None:
+    """An unticked checkbox submits NOTHING, so a positional zip would shift
+    every later row's flag onto the wrong assertion. The form sends the row
+    index as the checkbox value instead; this proves it lines up."""
+    form = {
+        "assert_type": ["contains", "has-keys", "regex"],
+        "assert_value": ["sorry", "intent, reply", r"\d+"],
+        "assert_path": ["", "", "reply"],
+        "assert_weight": ["1.0", "2.0", "1.0"],
+        "assert_required": ["1"],            # only the SECOND row is required
+        "assert_case_sensitive": ["2"],      # only the THIRD is case-sensitive
+    }
+    rows = wizard.assertions_from_form(lambda k: form.get(k, []))
+    check("three rows kept", len(rows) == 3, f"{rows}")
+    check("required landed on row 1 only",
+          [r.get("required", False) for r in rows] == [False, True, False], f"{rows}")
+    check("caseSensitive landed on row 2 only",
+          [r.get("caseSensitive", False) for r in rows] == [False, False, True], f"{rows}")
+    check("has-keys value split into a list", rows[1]["value"] == ["intent", "reply"],
+          f"{rows[1]}")
+    check("weight only written when it differs", "weight" not in rows[0] and rows[1]["weight"] == 2.0,
+          f"{rows}")
+    check("blank path dropped", "path" not in rows[0] and rows[2]["path"] == "reply", f"{rows}")
+
+
+def test_blank_form_rows_are_dropped_not_written_as_broken_entries() -> None:
+    form = {"assert_type": ["contains", "", "has-keys"],
+            "assert_value": ["x", "ignored", ""],
+            "assert_path": ["", "", ""], "assert_weight": ["1.0", "1.0", "1.0"]}
+    rows = wizard.assertions_from_form(lambda k: form.get(k, []))
+    check("only the complete row survives", len(rows) == 1, f"{rows}")
+
+
+def test_wizard_yaml_round_trips_assertions_through_config_load() -> None:
+    f = wizard.WizardFields(
+        name="checked", system_prompt="hi",
+        test_cases=[{"id": "tc1", "input": "hello"}],
+        rubric=[{"id": "quality", "description": "is it good", "weight": 1.0}],
+        assertions=[{"type": "not-contains", "value": "as an AI", "required": True},
+                    {"type": "has-keys", "value": "intent, reply", "weight": 2.0}])
+    check("the wizard accepts them", wizard.validate(f) == [], f"{wizard.validate(f)}")
+    tmp = Path(tempfile.mkdtemp()) / "checked.yaml"
+    tmp.write_text(wizard.to_yaml(f), encoding="utf-8")
+    uc = config.load(tmp)
+    check("both survived the round trip", len(uc.assertions) == 2, f"{uc.assertions}")
+    first = uc.assertions[0]
+    check("negation survived", first.negate is True and first.type == "contains",
+          f"{first}")
+    check("required survived", first.required is True)
+    check("has-keys value became a list", uc.assertions[1].value == ["intent", "reply"],
+          f"{uc.assertions[1]}")
+
+
+def test_wizard_refuses_an_unparseable_assertion_before_writing_a_file() -> None:
+    f = wizard.WizardFields(
+        name="broken", system_prompt="hi",
+        test_cases=[{"id": "tc1", "input": "hello"}],
+        rubric=[{"id": "quality", "description": "is it good"}],
+        assertions=[{"type": "regex", "value": "([unclosed"}])
+    errors = wizard.validate(f)
+    check("the wizard refuses it", any("invalid pattern" in e for e in errors), f"{errors}")
+
+
+def test_a_feature_with_no_checks_reports_none_not_zero_failures() -> None:
+    """An absent summary and a summary of zero failures are different facts —
+    a leaderboard showing "0 checks failed" for a feature with no checks would
+    be claiming evidence it never gathered."""
+    import asyncio
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+
+    async def fake_call_json(*a, **k):
+        return {"reply": "ok", "scores": {c.id: 4 for c in uc.rubric}}
+
+    original = client.call_json
+    sandbox.client_module.call_json = fake_call_json
+    judge.client_module.call_json = fake_call_json
+    try:
+        result = asyncio.run(bench.run(["vendor/a"], uc, judge_model="judge/j"))
+    finally:
+        sandbox.client_module.call_json = original
+        judge.client_module.call_json = original
+    row = result["results"][0]
+    check("no assertion summary at all", row.get("assertions") is None,
+          f"{row.get('assertions')}")
 
 
 # ── cache: what it keys on, what it refuses to serve, and who must never

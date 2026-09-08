@@ -91,6 +91,14 @@
       <span class="muted">none set — this feature can't be saved or judged without one</span>
       {% endfor %}
     </div>
+    {% if uc.assertions %}
+    <div>
+      <span class="stat-label" style="display:inline;">Checks</span>
+      {% for a in uc.assertions %}
+      <span class="badge {{ 'pending' if a.required else 'tie' }}">{{ a.label }}{{ ' (required)' if a.required else '' }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
     {% if uc.input_structure %}
     <div class="muted"><span class="stat-label" style="display:inline;">Input</span> {{ uc.input_structure }}</div>
     {% endif %}

@@ -19,6 +19,7 @@ from typing import Callable, Optional
 
 import yaml
 
+from . import assertions as assertions_module
 from .config import DEFAULT_JUDGE_MODEL
 
 DEFAULT_TIERS = ["free", "paid-low", "paid-mid"]
@@ -31,6 +32,11 @@ class WizardFields:
     system_prompt: str = ""
     test_cases: list = field(default_factory=list)   # [{"id","input","reference"}]
     rubric: list = field(default_factory=list)        # [{"id","description","weight"}]
+    # Deterministic checks shared by every test case — the YAML shape, not
+    # parsed `Assertion` objects, since this module's whole job is producing
+    # the file `config.load` then validates. [{"type","value","path",
+    # "weight","required","caseSensitive"}]
+    assertions: list = field(default_factory=list)
     max_price_in: float = 0.50
     max_price_out: float = 3.00
     min_context: int = 32_000
@@ -66,6 +72,7 @@ def defaults_from_project(defaults: dict) -> WizardFields:
     what "the project's defaults" means."""
     f = WizardFields()
     f.rubric = [dict(c) for c in (defaults.get("rubric") or [])]
+    f.assertions = [dict(a) for a in (defaults.get("assertions") or [])]
     f.max_price_in = float(defaults.get("maxPriceIn", f.max_price_in))
     f.max_price_out = float(defaults.get("maxPriceOut", f.max_price_out))
     f.min_context = int(defaults.get("minContext", f.min_context))
@@ -97,6 +104,10 @@ def validate(f: WizardFields) -> list:
     if f.code_file and not (f.code_current_model or "").strip():
         errors.append("a code target needs the exact model string currently hardcoded "
                       "there — the patch step has nothing to search for otherwise.")
+    # Run through the real parser rather than re-checking by hand, so the
+    # wizard and `config.load` can never disagree about what's valid — the
+    # thing that would let a form write a file that then fails to load.
+    errors += validate_assertions(_clean_assertions(f.assertions))
     return errors
 
 
@@ -105,6 +116,77 @@ def _headers(f: WizardFields) -> dict:
         return {}
     name, _, value = f.endpoint_header.partition(":")
     return {name.strip(): value.strip()}
+
+
+def validate_assertions(rows: list) -> list:
+    """Errors in already-cleaned assertion rows, via the REAL parser — the
+    same one `config.load` uses — so a form can never save something the
+    loader would then refuse."""
+    try:
+        assertions_module.parse(rows)
+    except assertions_module.BadAssertion as exc:
+        return [str(exc)]
+    return []
+
+
+def assertions_from_form(getlist: Callable) -> list:
+    """Reads assertion rows out of a submitted form — used by BOTH the
+    feature wizard and the project-defaults page, so the two can't disagree
+    about what a row means. Blank rows are dropped by `_clean_assertions`."""
+    types = getlist("assert_type")
+    values = getlist("assert_value")
+    paths = getlist("assert_path")
+    weights = getlist("assert_weight")
+    # A CHECKBOX ONLY SUBMITS WHEN TICKED, so its list can't be positionally
+    # zipped with the others — an unticked row would silently shift every
+    # later row's "required" flag onto the wrong assertion. Named per-index
+    # instead, and read back the same way.
+    required = set(getlist("assert_required"))
+    sensitive = set(getlist("assert_case_sensitive"))
+    rows = []
+    for i, kind in enumerate(types):
+        rows.append({
+            "type": kind,
+            "value": values[i] if i < len(values) else "",
+            "path": paths[i] if i < len(paths) else "",
+            "weight": weights[i] if i < len(weights) else "1.0",
+            "required": str(i) in required,
+            "caseSensitive": str(i) in sensitive,
+        })
+    return _clean_assertions(rows)
+
+
+def _clean_assertions(raw: list) -> list:
+    """Drops blank rows (a form always submits more slots than were filled)
+    and normalizes the rest to the YAML shape."""
+    out = []
+    for a in raw or []:
+        kind = str(a.get("type") or "").strip()
+        value = a.get("value")
+        if not kind:
+            continue
+        if kind.endswith("has-keys"):
+            keys = value if isinstance(value, list) else [
+                k.strip() for k in str(value or "").split(",") if k.strip()]
+            if not keys:
+                continue
+            value = keys
+        else:
+            value = str(value or "").strip()
+            if not value:
+                continue
+        entry = {"type": kind, "value": value}
+        if (a.get("path") or "").strip():
+            entry["path"] = a["path"].strip()
+        weight = float(a.get("weight") or 1.0)
+        if weight != 1.0:
+            entry["weight"] = weight
+        if a.get("required"):
+            entry["required"] = True
+        if a.get("caseSensitive"):
+            entry["caseSensitive"] = True
+        out.append(entry)
+    return out
 
 
 def to_yaml(f: WizardFields) -> str:
@@ -134,6 +216,12 @@ def to_yaml(f: WizardFields) -> str:
         "judgeModel": f.judge_model, "maxTokens": f.max_tokens,
         "notify": {"email": f.notify_email or None, "minImprovement": f.min_improvement},
     }
+    # Written only when there ARE any, so nothing changes in a file for a
+    # feature that configured none — and validated on the way out, so the
+    # wizard can never produce a YAML that `config.load` will then refuse.
+    checks = _clean_assertions(f.assertions)
+    if checks:
+        doc["assertions"] = checks
     if f.endpoint_url:
         doc["endpoint"] = {
             "url": f.endpoint_url, "method": f.endpoint_method or "POST",
@@ -236,6 +324,24 @@ def collect_cli(prompt_fn: Callable = input, *, repo_slug: Optional[str] = None,
         c_weight = _ask(prompt_fn, "  weight", "1.0")
         f.rubric.append({"id": c_id, "description": c_desc, "weight": float(c_weight or 1.0)})
 
+    print("\nDeterministic checks (optional) — things decidable in code, run free "
+          "before any judge call. Empty type to stop.")
+    print(f"  types: {', '.join(assertions_module.TYPES)} (each also as not-<type>)")
+    while True:
+        kind = _ask(prompt_fn, "  type (blank to stop)")
+        if not kind:
+            break
+        value = _ask(prompt_fn, "  value (for has-keys: comma-separated key names)")
+        path = _ask(prompt_fn, "  path into the JSON response (blank = the whole answer)")
+        weight = _ask(prompt_fn, "  weight", "1.0")
+        required = _ask(prompt_fn, "  required? failing it disqualifies the answer (y/N)").lower()
+        sensitive = _ask(prompt_fn, "  case-sensitive? (y/N)").lower()
+        f.assertions.append({
+            "type": kind, "value": value, "path": path or None,
+            "weight": float(weight or 1.0),
+            "required": required in ("y", "yes"),
+            "caseSensitive": sensitive in ("y", "yes")})
+
     f.max_price_in = float(_ask(prompt_fn, "max price in ($/1M tokens)", str(f.max_price_in)))
     f.max_price_out = float(_ask(prompt_fn, "max price out ($/1M tokens)", str(f.max_price_out)))
     f.min_context = int(_ask(prompt_fn, "minimum context length", str(f.min_context)))
@@ -300,6 +406,8 @@ def from_form(get_list: Callable, get: Callable) -> WizardFields:
         if c_id.strip() and c_desc.strip():
             f.rubric.append({"id": c_id.strip(), "description": c_desc,
                              "weight": float(c_weight) if c_weight else 1.0})
+
+    f.assertions = assertions_from_form(get_list)
 
     f.max_price_in = float(get("max_price_in", "") or f.max_price_in)
     f.max_price_out = float(get("max_price_out", "") or f.max_price_out)

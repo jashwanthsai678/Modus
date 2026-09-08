@@ -331,8 +331,21 @@ def create_app() -> Flask:
                 if c_id.strip() and c_desc.strip():
                     fields.rubric.append({"id": c_id.strip(), "description": c_desc,
                                           "weight": float(c_weight) if c_weight else 1.0})
+            fields.assertions = wizard_module.assertions_from_form(request.form.getlist)
+            # Validated before saving, so a bad regex is refused here rather
+            # than written into every feature created from these defaults
+            # and then failing at load.
+            assertion_errors = wizard_module.validate_assertions(fields.assertions)
+            if assertion_errors:
+                f = wizard_module.defaults_from_project(proj.defaults)
+                f.assertions = fields.assertions
+                return render_template(
+                    "project_defaults.html", project=proj, fields=f,
+                    default_judge_model=config_module.DEFAULT_JUDGE_MODEL,
+                    saved=None, errors=assertion_errors), 400
             defaults = {
                 "rubric": fields.rubric,
+                "assertions": fields.assertions,
                 "maxPriceIn": float(request.form.get("max_price_in") or 0.50),
                 "maxPriceOut": float(request.form.get("max_price_out") or 3.00),
                 "minContext": int(request.form.get("min_context") or 32_000),

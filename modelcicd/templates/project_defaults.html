@@ -8,6 +8,13 @@
   changes a <code>use_case.yaml</code> already saved; it only applies going forward, the same way
   editing a template doesn't rewrite documents already made from it.</p>
 
+{% if errors %}
+<div class="card errors">
+  <strong>Nothing was saved.</strong>
+  <ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
 {% if saved %}
 <div class="card flash-success">Saved.</div>
 {% endif %}
@@ -39,6 +46,8 @@
     </fieldset>
     {% endfor %}
   </div>
+
+  {% include "_assertion_rows.html" %}
 
   <div class="card">
     <h2 style="margin-top:0;">Price / model preferences</h2>

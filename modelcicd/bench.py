@@ -34,8 +34,25 @@ async def _judge_candidate(model_id: str, sandboxed: dict, judge_model: str,
     judged = await asyncio.gather(*(one(e) for e in sandboxed["results"]))
     scored = [j for j in judged if j.get("status") == "ok"]
     mean = round(sum(j["weighted"] for j in scored) / len(scored), 3) if scored else None
+
+    # A CANDIDATE-LEVEL SUMMARY OF THE DETERMINISTIC CHECKS, so a leaderboard
+    # can say "2 of 4 answers failed a required check" instead of making
+    # someone open every test case to find out why a score is on the floor.
+    # None when no assertions are configured — an absent summary and a
+    # summary of zero failures are different facts.
+    with_checks = [j.get("assertions") for j in judged if j.get("assertions")]
+    assertion_summary = None
+    if with_checks:
+        assertion_summary = {
+            "passed": sum(c["passed"] for c in with_checks),
+            "failed": sum(c["failed"] for c in with_checks),
+            "gated": sum(1 for j in judged if j.get("notJudged")),
+            "answersChecked": len(with_checks),
+        }
+
     return {"model": model_id, "testCases": list(judged),
-            "mean": mean, "wouldShipRate":
+            "mean": mean, "assertions": assertion_summary,
+            "wouldShipRate":
                 round(sum(1 for j in scored if j.get("wouldShip")) / len(scored), 3)
                 if scored else None,
             "counts": {"ok": len(scored),
@@ -123,6 +140,14 @@ async def rejudge_for_spread(bench_result: dict, uc: UseCase, judge_model: str,
     async def one_test_case(model_id: str, tc_result: dict) -> Optional[float]:
         tc = by_id.get(tc_result.get("testCase"))
         if tc_result.get("status") != "ok" or not tc:
+            return None
+        # An answer gated out by a required check was never judged, so it has
+        # no judge noise to measure — and re-scoring it would return the same
+        # floored 1.0 every time and report "judge spread ±0.00", which reads
+        # as a REMARKABLY consistent judge rather than as a judge that never
+        # ran. Same failure shape as a cache faking a zero spread: the
+        # honest answer is no number, not a flattering one.
+        if tc_result.get("notJudged"):
             return None
         async with gate:
             r = await judge_module.score_repeated(

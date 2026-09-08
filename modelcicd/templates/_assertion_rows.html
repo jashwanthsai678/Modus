@@ -1,0 +1,65 @@
+{# Assertion rows, shared by the feature wizard and the project-defaults page,
+   so the two forms can't drift apart in what they submit. Reads `fields`
+   (a WizardFields) from the enclosing context; `wizard.assertions_from_form`
+   is the matching reader.
+
+   NOTE ON THE CHECKBOXES: their value is the ROW INDEX, not "on". An
+   unticked checkbox submits nothing at all, so a plain getlist() of them
+   could not be zipped positionally with the text inputs — one unticked row
+   would shift every later row's flag onto the wrong assertion. #}
+<div class="card">
+  <h2 style="margin-top:0;">Deterministic checks <span class="hint">optional</span></h2>
+  <p class="muted">Things about an answer that are <strong>decidable in code</strong> — a required
+    field is present, a forbidden phrase isn't, the shape didn't change. These run free, before any
+    judge call, and their result is blended into the same 1&ndash;5 score. Anything that needs
+    reading and taste belongs in the rubric above instead; this is for the questions that have an
+    actual answer.</p>
+  <p class="muted">Checks are matched <strong>case-insensitively</strong> unless you say otherwise —
+    against model prose, "Refund" vs "refund" is almost never the difference you meant to catch.</p>
+
+  {% for i in range(4) %}
+  {% set a = fields.assertions[i] if i < fields.assertions|length else None %}
+  <fieldset>
+    <legend>check {{ i + 1 }}</legend>
+    <div class="row3">
+      <div>
+        <label>type</label>
+        <select name="assert_type">
+          <option value="" {{ 'selected' if not a else '' }}>— none —</option>
+          {% for t in ['contains', 'not-contains', 'equals', 'not-equals',
+                       'regex', 'not-regex', 'has-keys', 'not-has-keys'] %}
+          <option value="{{ t }}" {{ 'selected' if a and a.type == t else '' }}>{{ t }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>value <span class="hint">(for has-keys: comma-separated key names)</span></label>
+        <input name="assert_value" type="text"
+               value="{{ (a.value|join(', ')) if a and a.value is not string and a.value is iterable else (a.value if a else '') }}">
+      </div>
+      <div>
+        <label>path <span class="hint">(optional — a field in the JSON response, e.g. <code>intent</code>
+          or <code>data.reply</code>; blank checks the whole answer)</span></label>
+        <input name="assert_path" type="text" value="{{ a.path if a and a.path else '' }}">
+      </div>
+    </div>
+    <div class="row3">
+      <div>
+        <label>weight</label>
+        <input name="assert_weight" type="number" step="0.1" value="{{ a.weight if a and a.weight else '1.0' }}">
+      </div>
+      <div class="checkline" style="align-self: end;">
+        <input id="assert_required_{{ i }}" name="assert_required" type="checkbox" value="{{ i }}"
+               {{ 'checked' if a and a.required else '' }}>
+        <label for="assert_required_{{ i }}" style="margin:0;">required
+          <span class="hint">(failing this disqualifies the answer and skips its judge call)</span></label>
+      </div>
+      <div class="checkline" style="align-self: end;">
+        <input id="assert_case_{{ i }}" name="assert_case_sensitive" type="checkbox" value="{{ i }}"
+               {{ 'checked' if a and a.caseSensitive else '' }}>
+        <label for="assert_case_{{ i }}" style="margin:0;">case-sensitive</label>
+      </div>
+    </div>
+  </fieldset>
+  {% endfor %}
+</div>

@@ -25,6 +25,8 @@ from typing import Optional
 
 import yaml
 
+from . import assertions as assertions_module
+
 # The judge every use case falls back to when its YAML doesn't name one.
 # ONE definition, referenced by `wizard.py` too — it was previously spelled
 # out as a literal in three separate places, which is exactly how a default
@@ -72,6 +74,21 @@ class TestCase:
     # Per-test-case overrides of the use case's rubric — most test cases share
     # the same rubric, so this is empty far more often than not.
     rubric: list = field(default_factory=list)
+    # Deterministic checks on this answer (see `assertions.py`).
+    #
+    # THESE ADD TO THE USE CASE'S, THEY DO NOT REPLACE THEM — deliberately
+    # the OPPOSITE of how `rubric` above inherits, and the difference is
+    # not an inconsistency. Two rubrics can't coexist: they're competing
+    # scales for the same judgement, so a test case's own rubric has to
+    # replace the default. Two assertions are independent facts about one
+    # answer, and combine fine. Concretely: a use case declaring "every
+    # answer must have a `team` key" and a test case adding "and this one
+    # must say billing" means both, which is plainly what someone writing
+    # that meant. Under replace-semantics the shape check would silently
+    # vanish from exactly the test cases whose answers were pinned down
+    # most precisely — a required check disappearing without a word, which
+    # is the class of bug this project exists to not have.
+    assertions: list = field(default_factory=list)
 
 
 # ── Guardrails — what may be spent on ────────────────────────────────────────
@@ -154,6 +171,8 @@ class UseCase:
     rubric: list                     # list[Criterion] — the default, per test case may override
     guardrails: Guardrails
     notify: Notify
+    # list[Assertion] — the default, per test case may override. See `assertions.py`.
+    assertions: list = field(default_factory=list)
     judge_model: str = DEFAULT_JUDGE_MODEL
     max_tokens: int = 1200
     endpoint: Optional[Endpoint] = None       # live baseline to compare candidates against
@@ -198,15 +217,28 @@ def load(path) -> UseCase:
             f"The judge has nothing to score against, which is not a permissive "
             f"default, it is an unanswerable question.")
 
+    # Parsed HERE so a typo'd type or an unparseable regex is a config error
+    # with a file name on it, not a surprise thirty candidates into a bench.
+    try:
+        default_assertions = assertions_module.parse(raw.get("assertions"))
+    except assertions_module.BadAssertion as exc:
+        raise ValueError(f"{p.name}: {exc}") from exc
+
     test_cases = []
     for tc in raw["testCases"]:
         if not tc.get("id") or not tc.get("input"):
             raise ValueError(
                 f"{p.name}: every test case needs an 'id' and an 'input'. "
                 f"Got: {tc}")
+        try:
+            own_assertions = assertions_module.parse(tc.get("assertions"))
+        except assertions_module.BadAssertion as exc:
+            raise ValueError(f"{p.name}, test case {tc['id']!r}: {exc}") from exc
         test_cases.append(TestCase(
             id=tc["id"], input=tc["input"], reference=tc.get("reference"),
-            rubric=_criteria(tc.get("rubric")) or default_rubric))
+            rubric=_criteria(tc.get("rubric")) or default_rubric,
+            # ADDED to the use case's, not replacing them — see TestCase.
+            assertions=list(default_assertions) + own_assertions))
 
     g = raw.get("guardrails") or {}
     guardrails = Guardrails(
@@ -216,7 +248,15 @@ def load(path) -> UseCase:
         require_json=bool(g.get("requireJson", Guardrails.require_json)),
         allow_free=bool(g.get("allowFree", Guardrails.allow_free)),
         modality=g.get("modality", Guardrails.modality),
-        tiers=g.get("tiers") or Guardrails.tiers)
+        # `Guardrails().tiers`, NOT `Guardrails.tiers`. `tiers` is the one
+        # field here declared with `field(default_factory=...)` — a mutable
+        # default — which means it exists on an INSTANCE but not on the
+        # class, so the class-attribute spelling every neighbouring line
+        # uses raises AttributeError for this one. It only ever fired on a
+        # YAML that omits `guardrails.tiers` entirely, which the template
+        # always includes, so a hand-written minimal file was the one thing
+        # that couldn't load.
+        tiers=g.get("tiers") or list(Guardrails().tiers))
 
     n = raw.get("notify") or {}
     notify = Notify(email=n.get("email") or os.environ.get("MODELCICD_NOTIFY_EMAIL"),
@@ -250,6 +290,7 @@ def load(path) -> UseCase:
         name=raw["useCase"], description=raw.get("description", ""),
         system_prompt=raw["systemPrompt"], test_cases=test_cases,
         rubric=default_rubric, guardrails=guardrails, notify=notify,
+        assertions=default_assertions,
         judge_model=judge, max_tokens=int(raw.get("maxTokens", 1200)),
         endpoint=endpoint,
         schedule_interval_days=int(interval) if interval else None,
@@ -264,6 +305,9 @@ def describe(uc: UseCase) -> str:
         f"use case      {uc.name}",
         f"  {uc.description}" if uc.description else "",
         f"  test cases    {len(uc.test_cases)}",
+        f"  checks        {len(uc.assertions)} deterministic "
+        f"({sum(1 for a in uc.assertions if a.required)} required)"
+        if uc.assertions else "",
         f"  judge         {uc.judge_model}",
         f"  price ceiling in <= ${uc.guardrails.max_price_in:.2f}/M, "
         f"out <= ${uc.guardrails.max_price_out:.2f}/M",

@@ -45,6 +45,11 @@ def build(bench_result: dict, catalogue: Optional[dict] = None,
             "score": entry.get("mean"),
             "wouldShipRate": entry.get("wouldShipRate"),
             "counts": entry.get("counts"),
+            # The deterministic checks, summarized on the row. None means
+            # this feature configured none — NOT that everything passed.
+            # A leaderboard that shows "0 failed" for a feature with no
+            # checks would be claiming evidence it never gathered.
+            "assertions": entry.get("assertions"),
             # The first real error, surfaced onto the leaderboard row itself.
             # Without it a failed candidate reads as "could not be scored
             # ({'generation_failed': 1})" and a human has to go find the run's
@@ -213,6 +218,16 @@ def report(board: dict) -> str:
             lines.append(f"  {flag}{i:>3}  {r['model']:<44} {r['score']:.2f}  "
                          f"{price:>9}  ship={r.get('wouldShipRate', 0):.0%}{approved}"
                          f"{spread}{cand_spread}")
+            # Said on its own line, not squeezed into the row: a failed
+            # deterministic check is the most actionable thing on a
+            # leaderboard — it names a broken integration rather than a
+            # matter of taste — and it explains a score sitting on the floor.
+            checks = r.get("assertions") or {}
+            if checks.get("failed"):
+                gated = (f", {checks['gated']} answer(s) not judged at all"
+                        if checks.get("gated") else "")
+                lines.append(f"        checks: {checks['failed']} failed, "
+                            f"{checks['passed']} passed{gated}")
         lines.append("")
     lines += [f"  * = within {board.get('noise')} of this tier's best — a TIE "
              f"at one sample per test case, not a ranking.",

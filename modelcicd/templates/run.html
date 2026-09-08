@@ -65,7 +65,18 @@
     <td>{% if r.score is not none %}{{ '%.2f'|format(r.score) }}{% if r.judgeSpread is not none %}<span class="muted"> (&plusmn;{{ '%.2f'|format(r.judgeSpread) }} judge spread)</span>{% endif %}{% else %}—{% endif %}</td>
     {% if price_sensitivity %}<td>{% if r.get('combinedScore') is not none %}{{ '%.2f'|format(r.combinedScore) }}{% else %}—{% endif %}</td>{% endif %}
     <td>{% if r.price_out is not none %}${{ '%.2f'|format(r.price_out) }}/M{% else %}—{% endif %}</td>
-    <td>{% if r.wouldShipRate is not none %}{{ (r.wouldShipRate * 100)|round|int }}%{% else %}—{% endif %}</td>
+    <td>{% if r.wouldShipRate is not none %}{{ (r.wouldShipRate * 100)|round|int }}%{% else %}—{% endif %}
+      {# A failed deterministic check is the most actionable thing here — it
+         names a broken integration, not a matter of taste — so it sits on
+         the row, not only inside the expandable detail below. #}
+      {% if r.assertions %}
+        {% if r.assertions.failed %}
+        <span class="badge pending">{{ r.assertions.failed }} check{{ 's' if r.assertions.failed != 1 else '' }} failed</span>
+        {% else %}
+        <span class="badge approved">all {{ r.assertions.passed }} checks passed</span>
+        {% endif %}
+      {% endif %}
+    </td>
     <td class="muted">{{ r.rateLimitNote or r.error or '' }}</td>
   </tr>
   {% set case_detail = detail_by_model.get(r.model) %}
@@ -85,6 +96,28 @@
             <strong>score: {{ '%.2f'|format(tc.weighted) if tc.weighted is not none else '—' }}</strong>
             {% if tc.wouldShip is not none %}<span class="muted"> &middot; would ship: {{ 'yes' if tc.wouldShip else 'no' }}</span>{% endif %}
           </div>
+          {% if tc.assertions and tc.assertions.results %}
+          {# THE PART THAT NEEDS NO TRUST. Every line here was decided in
+             code against the answer printed above — a reader can verify it
+             themselves, which is exactly what a judged score can't offer. #}
+          <div style="margin-top: 8px;">
+            <span class="stat-label" style="display:inline;">Deterministic checks</span>
+            <ul style="margin: 4px 0 0; padding-left: 18px;">
+              {% for a in tc.assertions.results %}
+              <li>
+                <span class="badge {{ 'approved' if a.passed else 'pending' }}">{{ 'pass' if a.passed else 'fail' }}</span>
+                <span class="mono">{{ a.label }}</span>
+                {% if a.required %}<span class="muted"> · required</span>{% endif %}
+                <span class="muted"> — {{ a.detail }}</span>
+              </li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% endif %}
+          {% if tc.notJudged %}
+          <div class="muted" style="margin-top: 6px;"><strong>Not judged.</strong> {{ tc.notJudged }} —
+            no judge call was spent on an answer that already can't win.</div>
+          {% endif %}
           {% if tc.reasons %}
           <ul style="margin: 6px 0 0; padding-left: 18px;">
             {% for cid, reason in tc.reasons.items() %}

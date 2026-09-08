@@ -26,6 +26,7 @@ that makes a ranking meaningless without anyone noticing.
 """
 from typing import Optional
 
+from . import assertions as assertions_module
 from . import client as client_module
 from .catalogue import key as logical_key
 from .config import Criterion, TestCase, UseCase
@@ -83,7 +84,28 @@ async def score_one(model_id: str, judge_model: str, uc: UseCase, tc: TestCase,
     `cache` KEYS ON THE RENDERED PROMPT, which contains the rubric verbatim —
     so editing a criterion misses the cache and re-judges, which is correct,
     while re-running an unchanged run is free. Never passed by
-    `score_repeated` below."""
+    `score_repeated` below.
+
+    DETERMINISTIC CHECKS RUN FIRST, AND FREE. `assertions.py` decides
+    everything decidable in code — a missing field, a forbidden phrase, a
+    changed shape — before a judge call is made, and their weighted result is
+    blended into the same 1-5 mean as the rubric. With no assertions
+    configured (every use case that predates them) the arithmetic below is
+    unchanged: zero assertion weight means the total is the rubric's own.
+
+    A FAILED `required: true` CHECK SKIPS THE JUDGE ENTIRELY. The answer
+    can't win no matter how it reads, so scoring its prose is money spent on
+    a foregone conclusion. The row is floored and carries WHICH check failed
+    in place of the judge's reasoning, so it never reads as mysteriously
+    bad."""
+    checks = assertions_module.evaluate(output, tc.assertions or uc.assertions)
+    if checks["gateFailed"]:
+        return {"testCase": tc.id, "status": "ok", "scores": {},
+                "weighted": assertions_module.FAIL_SCORE, "reasons": {},
+                "wouldShip": False, "assertions": checks,
+                "notJudged": ("failed a required check, so the judge was not "
+                              "called: " + "; ".join(checks["gateLabels"]))}
+
     criteria = tc.rubric or uc.rubric
     reference_block = (f"\nA REFERENCE ANSWER, for comparison only — the model's "
                        f"answer need not match it word for word:\n{tc.reference}\n"
@@ -99,7 +121,8 @@ async def score_one(model_id: str, judge_model: str, uc: UseCase, tc: TestCase,
             prompt, model=judge_model, label=f"judge[{model_id}:{tc.id}]",
             required=("scores",), temperature=0.1, max_tokens=1200, cache=cache)
     except Exception as exc:                        # noqa: BLE001
-        return {"testCase": tc.id, "status": "judge_failed", "error": str(exc)[:300]}
+        return {"testCase": tc.id, "status": "judge_failed", "error": str(exc)[:300],
+                "assertions": checks if checks["total"] else None}
 
     scores = {}
     for c in criteria:
@@ -107,12 +130,24 @@ async def score_one(model_id: str, judge_model: str, uc: UseCase, tc: TestCase,
             scores[c.id] = max(1.0, min(5.0, float((data.get("scores") or {}).get(c.id, 3))))
         except (TypeError, ValueError):
             scores[c.id] = 3.0
-    total_weight = sum(c.weight for c in criteria) or 1.0
-    weighted = round(sum(scores[c.id] * c.weight for c in criteria) / total_weight, 3)
+
+    # ONE WEIGHTED MEAN OVER BOTH SOURCES. Judged criteria and deterministic
+    # checks share a scale (1-5) and a weight, so they combine the way two
+    # rubric criteria always have. `checks["weight"]` is 0 when nothing is
+    # configured, which makes this the identical expression it was before
+    # assertions existed — not a special case, just an empty sum.
+    rubric_weight = sum(c.weight for c in criteria)
+    total_weight = rubric_weight + checks["weight"]
+    earned = sum(scores[c.id] * c.weight for c in criteria)
+    if checks["weight"]:
+        earned += checks["score"] * checks["weight"]
+    weighted = round(earned / total_weight, 3) if total_weight else round(
+        sum(scores.values()) / (len(scores) or 1), 3)
 
     return {"testCase": tc.id, "status": "ok", "scores": scores,
             "weighted": weighted, "reasons": data.get("reasons") or {},
-            "wouldShip": bool(data.get("wouldShip"))}
+            "wouldShip": bool(data.get("wouldShip")),
+            "assertions": checks if checks["total"] else None}
 
 
 async def score_repeated(model_id: str, judge_model: str, uc: UseCase, tc: TestCase,
