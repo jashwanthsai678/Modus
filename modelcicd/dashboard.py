@@ -656,18 +656,28 @@ def create_app() -> Flask:
             abort(404, f"no run file named {filename!r}")
         data = json.loads(p.read_text(encoding="utf-8"))
         board = data.get("board") or {}
+        bench = data.get("bench") or {}
+
+        uc = None
+        if project:
+            uc_path = project_module.find_use_case(project, board.get("useCase", ""))
+            if uc_path:
+                try:
+                    uc = config_module.load(uc_path)
+                except (ValueError, FileNotFoundError):
+                    uc = None
+
+        # THE ACTUAL PROOF, NOT JUST THE NUMBER. A score means nothing to a
+        # reader who can't see what earned it — this is every candidate's
+        # real answer to every real test case, exactly what the judge saw,
+        # already sitting in the saved run file and never shown until now.
+        tc_inputs = {tc.id: tc.input for tc in uc.test_cases} if uc else {}
+        detail_by_model = {r["model"]: r.get("testCases") or [] for r in bench.get("results") or []}
 
         price_sensitivity = request.args.get("price_sensitivity", type=float) or 0.0
         tiers = board.get("tiers") or {}
         if price_sensitivity:
-            max_price_out = None
-            if project:
-                uc_path = project_module.find_use_case(project, board.get("useCase", ""))
-                if uc_path:
-                    try:
-                        max_price_out = config_module.load(uc_path).guardrails.max_price_out
-                    except (ValueError, FileNotFoundError):
-                        max_price_out = None
+            max_price_out = uc.guardrails.max_price_out if uc else None
             if max_price_out is None:
                 # Unscoped run, or the use case's yaml couldn't be found —
                 # fall back to the highest price actually seen in this run
@@ -680,7 +690,8 @@ def create_app() -> Flask:
                 board, price_sensitivity=price_sensitivity, max_price_out=max_price_out)
 
         return render_template("run.html", board=board, tiers=tiers, filename=p.name,
-                              project=project, price_sensitivity=price_sensitivity)
+                              project=project, price_sensitivity=price_sensitivity,
+                              tc_inputs=tc_inputs, detail_by_model=detail_by_model)
 
     app.add_url_rule("/run/<path:filename>", "run_detail", run_detail)
     app.add_url_rule("/projects/<project>/run/<path:filename>", "run_detail", run_detail)
