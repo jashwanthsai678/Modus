@@ -13,9 +13,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from modelcicd import (assertions, bench, cache, catalogue, client, code_patch,  # noqa: E402
-                       code_scan, config, endpoint_client, guardrails, judge,
-                       project, rank, runner, sandbox, scheduler, secrets, state,
-                       wizard)
+                       code_scan, config, endpoint_client, guardrails, health,
+                       judge, project, rank, runner, sandbox, scheduler, secrets,
+                       state, wizard)
 
 FAILURES: list = []
 
@@ -1258,6 +1258,316 @@ def test_dig_reads_a_nested_field() -> None:
         check("missing field raises", True)
 
 
+# ── health probe: drop only what is provably gone ───────────────────────────
+#
+# TWICE-OBSERVED FAILURE THIS GUARDS. A deprecated model id keeps looking
+# fine everywhere it's read from — catalogue, guardrails, candidate list —
+# and only fails on a real call, minutes into a run. A dead JUDGE is worse:
+# every generation call gets paid for and every one comes back judge_failed.
+
+def test_a_model_level_rejection_carries_the_platforms_own_message() -> None:
+    """The message IS the decision — the status code isn't enough (see
+    `health.py`) — and it's often the fix, too: OpenRouter's own reply to a
+    retired free slug names the paid one to use instead."""
+    import asyncio
+    body = ('{"error": {"message": "This model is unavailable for free. The paid '
+            'version is available now - use this slug instead: minimax/minimax-m3", '
+            '"code": 404}}')
+    for status in (400, 404):
+        with _NoNetwork(content=body, status=status):
+            try:
+                asyncio.run(client.call_json("hi", model="vendor/gone", label="t",
+                                             attempts=3))
+                check(f"HTTP {status} raises", False)
+            except client.ModelUnavailableError as exc:
+                check(f"HTTP {status} raises ModelUnavailableError", True)
+                check(f"HTTP {status} keeps the platform's message verbatim",
+                      "use this slug instead: minimax/minimax-m3" in str(exc), str(exc))
+            except Exception as exc:                # noqa: BLE001
+                check(f"HTTP {status} raises ModelUnavailableError", False,
+                      f"got {type(exc).__name__}")
+
+
+def test_the_upstream_provider_name_is_surfaced() -> None:
+    """"Provider returned error" alone is unattributable. The metadata names
+    which upstream host failed, and that's the tell separating "this model
+    is gone" from "this model's host had a bad second"."""
+    import asyncio
+    body = ('{"error": {"message": "Provider returned error", "code": 404, '
+            '"metadata": {"provider_name": "Nvidia", "raw": ""}}}')
+    with _NoNetwork(content=body, status=404):
+        try:
+            asyncio.run(client.call_json("hi", model="v/m", label="t", attempts=3))
+            check("raises", False)
+        except client.ModelUnavailableError as exc:
+            check("names the upstream provider", "Nvidia" in str(exc), str(exc))
+
+
+def test_a_model_level_rejection_is_not_retried() -> None:
+    """It will not stop being a 404, and the retry message ("that was not
+    valid — return ONLY the JSON") is nonsense for an HTTP error."""
+    import asyncio
+    with _NoNetwork(status=404, content='{"error": {"message": "gone"}}') as fake:
+        try:
+            asyncio.run(client.call_json("hi", model="vendor/gone", label="t",
+                                         attempts=3))
+        except client.ModelUnavailableError:
+            pass
+        check("one call, not three", len(fake.posts) == 1, f"{len(fake.posts)}")
+
+
+def test_classification_reads_the_message_not_the_status_code() -> None:
+    """THE CORRECTION THAT CAME OUT OF PROBING REAL MODELS. Excluding on 404
+    would have dropped this project's own configured judge — whose 404 said
+    only "Provider returned error (upstream provider: Nvidia)", an upstream
+    hiccup — and simultaneously missed a fake id, which OpenRouter refuses
+    with a 400. Same status, opposite meanings; different statuses, same
+    meaning."""
+    fatal = [
+        "HTTP 400: vendor/x is not a valid model ID",
+        "HTTP 404: This model is unavailable for free. The paid version is "
+        "available now - use this slug instead: minimax/minimax-m3",
+        "HTTP 404: this model has been deprecated",
+        "HTTP 404: no longer available",
+    ]
+    for message in fatal:
+        check(f"fatal: {message[:45]}", health.classify(message) == health.FATAL, message)
+
+    survivable = [
+        "HTTP 404: Provider returned error (upstream provider: Nvidia)",
+        "HTTP 404: No endpoints found for vendor/x",
+        "HTTP 400: max_tokens must be a positive integer",
+        "HTTP 404: ",
+        "",
+    ]
+    for message in survivable:
+        check(f"not fatal: {message[:45] or '(empty)'}",
+              health.classify(message) == "unknown", message)
+
+
+def test_probe_classifies_each_outcome() -> None:
+    import asyncio
+    cases = [
+        (client.ModelUnavailableError("HTTP 400: x is not a valid model ID"), health.FATAL),
+        # A model-level rejection whose message does NOT prove permanence
+        # must come back "unknown", so the candidate still runs.
+        (client.ModelUnavailableError("HTTP 404: Provider returned error"), "unknown"),
+        (client.RateLimitedError("429"), "rate_limited"),
+        (RuntimeError("connection reset"), "unknown"),
+        (None, "ok"),
+    ]
+    original = health.client_module.call_json
+    try:
+        for error, expected in cases:
+            async def fake(*a, _e=error, **k):
+                if _e is not None:
+                    raise _e
+                return {"ok": True}
+            health.client_module.call_json = fake
+            result = asyncio.run(health.probe("vendor/m"))
+            check(f"{type(error).__name__ if error else 'success'} -> {expected}",
+                  result["status"] == expected, f"{result}")
+    finally:
+        health.client_module.call_json = original
+
+
+def test_only_a_provable_death_excludes_a_candidate() -> None:
+    """UNKNOWN CUTS BOTH WAYS. Silently shrinking the field on a guess is the
+    same class of bug as silently assuming an unknown price is free — and a
+    rate limit in particular would drop half the free tier at a busy moment,
+    which is a fact about the minute, not the model."""
+    results = [
+        {"model": "a", "status": "ok", "detail": ""},
+        {"model": "b", "status": health.FATAL, "detail": "404"},
+        {"model": "c", "status": "rate_limited", "detail": "429"},
+        {"model": "d", "status": "unknown", "detail": "timeout"},
+    ]
+    usable, fatal = health.partition(results)
+    check("the dead one is dropped", [f["model"] for f in fatal] == ["b"], f"{fatal}")
+    check("the rate-limited one is KEPT", "c" in usable, f"{usable}")
+    check("the unexplained one is KEPT", "d" in usable, f"{usable}")
+    check("the healthy one is kept", "a" in usable, f"{usable}")
+
+
+def test_the_summary_names_statuses_rather_than_counting_unhealthy() -> None:
+    """"One is gone, two were rate limited" and "three are gone" call for
+    completely different reactions; a single "3 unhealthy" hides that."""
+    text = health.summary([
+        {"model": "a", "status": "ok"}, {"model": "b", "status": health.FATAL},
+        {"model": "c", "status": "rate_limited"}, {"model": "d", "status": "rate_limited"},
+    ])
+    check("counts by status", "1 ok" in text and "1 unavailable" in text
+          and "2 rate_limited" in text, text)
+
+
+def _stub_health(statuses: dict):
+    """Replaces the probe with a canned verdict per model id."""
+    async def fake_probe_all(model_ids, **kwargs):
+        return [{"model": m, "provider": "openrouter",
+                 "status": statuses.get(m, "ok"), "detail": f"stubbed {statuses.get(m, 'ok')}",
+                 "seconds": 0.0} for m in model_ids]
+    return fake_probe_all
+
+
+def _stub_calls(uc):
+    async def fake_call_json(*a, **k):
+        return {"reply": "ok", "scores": {c.id: 4 for c in uc.rubric}}
+    return fake_call_json
+
+
+def test_a_dead_candidate_is_dropped_and_reported_never_silently() -> None:
+    """A candidate excluded before the bench has no leaderboard row, so if
+    the exclusion isn't reported it simply isn't there — the same silent
+    disappearance this project already had to fix in bulk-create."""
+    import asyncio
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+    original_probe = runner.health_module.probe_all
+    original_call = client.call_json
+    runner.health_module.probe_all = _stub_health({"vendor/gone": health.FATAL})
+    sandbox.client_module.call_json = _stub_calls(uc)
+    judge.client_module.call_json = _stub_calls(uc)
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            result = asyncio.run(runner.execute(
+                uc, {}, ["vendor/alive", "vendor/gone"], state_root=root, out_dir=root))
+            check("the dead one is in `excluded`",
+                  [h["model"] for h in result["excluded"]] == ["vendor/gone"],
+                  f"{result['excluded']}")
+            benched = [r["model"] for r in
+                       (result["board"].get("tiers") or {}).get("unknown", [])]
+            check("and is not on the leaderboard", "vendor/gone" not in benched, f"{benched}")
+            check("the live one was benched", "vendor/alive" in benched, f"{benched}")
+            saved = json.loads(Path(result["out_path"]).read_text(encoding="utf-8"))
+            check("the exclusion is saved with the run, not just returned",
+                  any(h["model"] == "vendor/gone" and h["status"] == health.FATAL
+                      for h in saved.get("health") or []), f"{saved.get('health')}")
+    finally:
+        runner.health_module.probe_all = original_probe
+        sandbox.client_module.call_json = original_call
+        judge.client_module.call_json = original_call
+
+
+def test_a_dead_judge_refuses_the_run_before_spending_anything() -> None:
+    """THE EXPENSIVE ONE. With a dead judge every candidate answer gets
+    bought and then scored as judge_failed — the whole run wasted. Refused
+    up front instead, the way `check_judge_not_candidate` refuses rather
+    than warns."""
+    import asyncio
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+    generation_calls = []
+
+    async def counting_call(*a, **k):
+        generation_calls.append(1)
+        return {"reply": "ok"}
+
+    original_probe = runner.health_module.probe_all
+    original_call = client.call_json
+    runner.health_module.probe_all = _stub_health({uc.judge_model: health.FATAL})
+    sandbox.client_module.call_json = counting_call
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            try:
+                asyncio.run(runner.execute(uc, {}, ["vendor/alive"],
+                                           state_root=root, out_dir=root))
+                check("a dead judge refuses the run", False)
+            except RuntimeError as exc:
+                check("a dead judge refuses the run", True)
+                check("and names the judge", uc.judge_model in str(exc), str(exc))
+                check("and says nothing was spent", "Nothing was spent" in str(exc), str(exc))
+            check("no generation call was made", not generation_calls,
+                  f"{len(generation_calls)} call(s)")
+            check("no run file was written", list(root.glob("*.json")) == [],
+                  f"{list(root.glob('*.json'))}")
+    finally:
+        runner.health_module.probe_all = original_probe
+        sandbox.client_module.call_json = original_call
+
+
+def test_every_candidate_dead_refuses_rather_than_benching_nothing() -> None:
+    import asyncio
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+    original_probe = runner.health_module.probe_all
+    runner.health_module.probe_all = _stub_health(
+        {"vendor/a": health.FATAL, "vendor/b": health.FATAL})
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            try:
+                asyncio.run(runner.execute(uc, {}, ["vendor/a", "vendor/b"],
+                                           state_root=Path(d), out_dir=Path(d)))
+                check("an empty field refuses", False)
+            except RuntimeError as exc:
+                check("an empty field refuses", True)
+                check("and suggests re-polling the catalogue",
+                      "catalogue --refresh" in str(exc), str(exc))
+    finally:
+        runner.health_module.probe_all = original_probe
+
+
+def test_health_check_off_skips_the_probe_entirely() -> None:
+    """Default behavior has to remain reachable — and the probe costs real
+    tokens, so opting out must actually make zero probe calls."""
+    import asyncio
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+    probes = []
+
+    async def counting_probe_all(model_ids, **kwargs):
+        probes.append(model_ids)
+        return []
+
+    original_probe = runner.health_module.probe_all
+    original_call = client.call_json
+    runner.health_module.probe_all = counting_probe_all
+    sandbox.client_module.call_json = _stub_calls(uc)
+    judge.client_module.call_json = _stub_calls(uc)
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            result = asyncio.run(runner.execute(uc, {}, ["vendor/a"], state_root=root,
+                                                out_dir=root, health_check=False))
+            check("no probe was made", not probes, f"{probes}")
+            check("and health is reported empty, not fabricated",
+                  result["health"] == [] and result["excluded"] == [], f"{result['health']}")
+    finally:
+        runner.health_module.probe_all = original_probe
+        sandbox.client_module.call_json = original_call
+        judge.client_module.call_json = original_call
+
+
+def test_the_judge_is_probed_but_never_becomes_a_candidate() -> None:
+    """The judge is appended to the probe list to check it's alive. It must
+    not survive into the benched field — that would make it its own examiner,
+    which `judge.check_judge_not_candidate` refuses outright."""
+    import asyncio
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+    probed = []
+
+    async def recording_probe_all(model_ids, **kwargs):
+        probed.extend(model_ids)
+        return [{"model": m, "status": "ok", "detail": "", "provider": "openrouter",
+                 "seconds": 0.0} for m in model_ids]
+
+    original_probe = runner.health_module.probe_all
+    original_call = client.call_json
+    runner.health_module.probe_all = recording_probe_all
+    sandbox.client_module.call_json = _stub_calls(uc)
+    judge.client_module.call_json = _stub_calls(uc)
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            result = asyncio.run(runner.execute(uc, {}, ["vendor/a"],
+                                                state_root=root, out_dir=root))
+            check("the judge was probed", uc.judge_model in probed, f"{probed}")
+            benched = [r["model"] for band in (result["board"].get("tiers") or {}).values()
+                       for r in band]
+            check("but was not benched", uc.judge_model not in benched, f"{benched}")
+    finally:
+        runner.health_module.probe_all = original_probe
+        sandbox.client_module.call_json = original_call
+        judge.client_module.call_json = original_call
+
+
 # ── measurement fingerprint: two scores can't be silently compared ──────────
 #
 # THE BUG THESE GUARD, OBSERVED IN THIS PROJECT'S OWN DATA. `agent_router`
@@ -1371,6 +1681,37 @@ def test_measurement_changes_names_what_moved_in_words() -> None:
           config.measurement_changes(before, before) == [])
 
 
+def test_a_fingerprint_from_an_older_scheme_makes_no_claim() -> None:
+    """FOUND WITHIN AN HOUR OF SHIPPING THE FIRST VERSION. Recomposing which
+    component covers what changed the hashing scheme, which silently made
+    every stored run look like the rubric, the checks AND the test cases had
+    all changed at once — on a real run, in real output. A false "not
+    comparable" on every feature is exactly how a warning stops being read,
+    so a version mismatch is UNKNOWN, like an absent fingerprint."""
+    current = config.measurement(_uc_with())
+    old_scheme = {**current, "version": current["version"] - 1}
+    check("a version mismatch is unknown, not different",
+          config.comparable(current, old_scheme) is None,
+          f"{config.comparable(current, old_scheme)}")
+    check("and so reports no changes rather than inventing a list",
+          config.measurement_changes(current, old_scheme) == [],
+          f"{config.measurement_changes(current, old_scheme)}")
+    check("the version is part of the combined hash",
+          config._hash({**{k: current[k] for k in config.MEASUREMENT_LABELS},
+                        "version": current["version"]}) == current["combined"])
+
+
+def test_comparable_is_three_valued_and_is_the_single_decider() -> None:
+    """The trend line and the run-page warning must never disagree about
+    whether two runs are comparable, so both read this one function."""
+    a = config.measurement(_uc_with())
+    b = config.measurement(_uc_with(judge_model="someone/else"))
+    check("identical -> True", config.comparable(a, a) is True)
+    check("different -> False", config.comparable(a, b) is False)
+    check("missing -> None", config.comparable(a, None) is None)
+    check("empty -> None", config.comparable(a, {}) is None)
+
+
 def test_a_run_from_before_fingerprints_is_unknown_not_unchanged() -> None:
     """An absent fingerprint is not evidence of a matching one. Claiming
     "unchanged" for a run recorded before this existed would be inventing
@@ -1457,7 +1798,7 @@ def test_the_trend_line_breaks_where_the_measuring_stick_changed() -> None:
     from modelcicd import dashboard
 
     def run_at(score, fingerprint):
-        return {"ranAt": "2026-01-01T00:00:00", "measurement": {"combined": fingerprint},
+        return {"ranAt": "2026-01-01T00:00:00", "measurement": {"combined": fingerprint, "version": config.MEASUREMENT_VERSION},
                 "tiers": {"free": [{"model": "m", "score": score}]}}
 
     same = [run_at(2.0, "aaa"), run_at(3.0, "aaa"), run_at(4.0, "aaa")]
@@ -1494,8 +1835,8 @@ def test_an_unknown_fingerprint_is_dashed_not_gapped() -> None:
     history = [
         {"tiers": {"free": [{"model": "m", "score": 2.0}]}},                 # pre-fingerprint
         {"tiers": {"free": [{"model": "m", "score": 2.5}]}},                 # pre-fingerprint
-        {"measurement": {"combined": "aaa"}, "tiers": {"free": [{"model": "m", "score": 4.0}]}},
-        {"measurement": {"combined": "aaa"}, "tiers": {"free": [{"model": "m", "score": 4.2}]}},
+        {"measurement": {"combined": "aaa", "version": config.MEASUREMENT_VERSION}, "tiers": {"free": [{"model": "m", "score": 4.0}]}},
+        {"measurement": {"combined": "aaa", "version": config.MEASUREMENT_VERSION}, "tiers": {"free": [{"model": "m", "score": 4.2}]}},
     ]
     sp = dashboard._sparkline(dashboard._best_per_run(history))
     check("no hard break is claimed where nothing is known", sp["breaks"] == 0, f"{sp}")
@@ -1574,9 +1915,9 @@ def test_a_run_that_scored_nothing_contributes_no_point() -> None:
     zero, which would read as a catastrophic regression."""
     from modelcicd import dashboard
     history = [
-        {"measurement": {"combined": "aaa"}, "tiers": {"free": [{"model": "m", "score": 4.0}]}},
-        {"measurement": {"combined": "aaa"}, "tiers": {"free": [{"model": "m", "score": None}]}},
-        {"measurement": {"combined": "aaa"}, "tiers": {"free": [{"model": "m", "score": 4.2}]}},
+        {"measurement": {"combined": "aaa", "version": config.MEASUREMENT_VERSION}, "tiers": {"free": [{"model": "m", "score": 4.0}]}},
+        {"measurement": {"combined": "aaa", "version": config.MEASUREMENT_VERSION}, "tiers": {"free": [{"model": "m", "score": None}]}},
+        {"measurement": {"combined": "aaa", "version": config.MEASUREMENT_VERSION}, "tiers": {"free": [{"model": "m", "score": 4.2}]}},
     ]
     points = dashboard._best_per_run(history)
     check("the unscoreable run is skipped, not zeroed", len(points) == 2, f"{points}")

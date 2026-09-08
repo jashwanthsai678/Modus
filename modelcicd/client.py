@@ -27,6 +27,29 @@ class RateLimitedError(RuntimeError):
     folding it into a generic failure."""
 
 
+class ModelUnavailableError(RuntimeError):
+    """The platform rejected the request at the model level — 400 or 404.
+
+    CARRIES THE PLATFORM'S OWN MESSAGE, NOT A PARAPHRASE, and that is the
+    whole point of this class. Checked live against OpenRouter, the status
+    code alone says almost nothing:
+
+        404  "This model is unavailable for free. The paid version is
+              available now - use this slug instead: minimax/minimax-m3"
+                                              -> gone for good, and the
+                                                 message names the fix
+        404  "Provider returned error"  metadata: {provider_name: Nvidia}
+                                              -> the UPSTREAM had a moment;
+                                                 the model is fine
+        400  "vendor/x is not a valid model ID"
+                                              -> never existed
+
+    So two 404s mean opposite things, and the most clear-cut death is a 400.
+    This class therefore makes no claim about permanence — it just preserves
+    what the platform said. Deciding which of these justifies dropping a
+    candidate is policy, and it lives in `health.py`."""
+
+
 def _strip_fences(text: str) -> str:
     return _FENCE.sub("", text or "").strip()
 
@@ -34,6 +57,31 @@ def _strip_fences(text: str) -> str:
 def _raise_if_rate_limited(response) -> None:
     if response.status_code == 429:
         raise RateLimitedError("rate limited (429 Too Many Requests)")
+
+
+def _platform_error(response) -> str:
+    """The platform's own words for why it refused. Falls back to raw text,
+    and never raises — this runs on an already-failing path."""
+    try:
+        payload = response.json()
+    except Exception:                               # noqa: BLE001
+        return (getattr(response, "text", "") or "")[:300]
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if not isinstance(error, dict):
+        return str(error or payload)[:300]
+    message = str(error.get("message") or "")
+    provider = (error.get("metadata") or {}).get("provider_name")
+    if provider:
+        # Named because it's the tell that distinguishes "this model is gone"
+        # from "this model's host had a bad second".
+        message = f"{message} (upstream provider: {provider})"
+    return message[:300]
+
+
+def _raise_if_model_rejected(response) -> None:
+    if response.status_code in (400, 404):
+        raise ModelUnavailableError(
+            f"HTTP {response.status_code}: {_platform_error(response)}")
 
 
 async def call_json(prompt: str, *, model: str, label: str,
@@ -104,6 +152,7 @@ async def call_json(prompt: str, *, model: str, label: str,
                          "temperature": temperature, "max_tokens": max_tokens,
                          "response_format": {"type": "json_object"}})
                 _raise_if_rate_limited(response)
+                _raise_if_model_rejected(response)
                 response.raise_for_status()
                 payload = response.json()
                 choice = (payload.get("choices") or [{}])[0]
@@ -118,10 +167,11 @@ async def call_json(prompt: str, *, model: str, label: str,
                 if cache is not None and cache_key:
                     cache.put(cache_key, data, model=model)
                 return data
-            except RateLimitedError:
+            except (RateLimitedError, ModelUnavailableError):
                 # Fail fast — retrying immediately just hits the same limit
-                # again, and the "that wasn't valid JSON" retry message below
-                # would be nonsensical for an HTTP error anyway.
+                # again (and a 404 will never stop being a 404), while the
+                # "that wasn't valid JSON" retry message below would be
+                # nonsensical for an HTTP error anyway.
                 raise
             except Exception as exc:                # noqa: BLE001
                 last_error = exc

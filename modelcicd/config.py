@@ -318,6 +318,17 @@ def load(path) -> UseCase:
 # didn't" is immediately actionable, and it's the difference between a
 # warning people read and a warning people learn to click past.
 
+# BUMP THIS WHENEVER THE HASHING SCHEME CHANGES, and note what happens when
+# you do: every stored fingerprint becomes UNCOMPARABLE, not "changed". This
+# was found the hard way within an hour of shipping the first version —
+# recomposing which component covers what (see `measurement`) silently made
+# every existing run look like the rubric, checks and test cases had all
+# changed at once. A false "not comparable" on every feature is how a warning
+# stops being read, so a version mismatch now makes NO CLAIM, exactly like an
+# absent fingerprint.
+MEASUREMENT_VERSION = 2
+
+
 def _hash(payload) -> str:
     """A short, stable digest. Twelve hex characters — long enough that a
     collision isn't a practical concern for one use case's ~50-run history,
@@ -367,7 +378,9 @@ def measurement(uc: UseCase) -> dict:
     prompt = _hash(uc.system_prompt)
     parts = {"rubric": rubric, "checks": checks, "testCases": cases,
              "prompt": prompt, "judge": _hash(uc.judge_model)}
-    return {**parts, "combined": _hash(parts), "testCaseCount": len(uc.test_cases)}
+    return {**parts, "version": MEASUREMENT_VERSION,
+            "combined": _hash({**parts, "version": MEASUREMENT_VERSION}),
+            "testCaseCount": len(uc.test_cases)}
 
 
 # Which component labels read as what, when a run is compared to the one
@@ -382,14 +395,34 @@ MEASUREMENT_LABELS = {
 }
 
 
+def comparable(current: Optional[dict], previous: Optional[dict]) -> Optional[bool]:
+    """Are two runs' scores on the same scale? True / False / None.
+
+    THREE-VALUED ON PURPOSE, AND THE ONE PLACE THAT DECIDES IT. `None` means
+    unknown — either side missing a fingerprint, or the two computed by
+    different scheme versions. Callers must not collapse `None` into either
+    answer: a drawn line asserts "the measurement didn't change" and a gap
+    asserts "it did", so an unknown gets a third rendering (dashed) and no
+    warning text at all.
+
+    Every consumer reads this rather than comparing hashes itself, so the
+    trend line and the run-page warning cannot end up disagreeing about
+    whether two runs are comparable."""
+    if not current or not previous:
+        return None
+    if current.get("version") != previous.get("version"):
+        return None
+    return current.get("combined") == previous.get("combined")
+
+
 def measurement_changes(current: Optional[dict], previous: Optional[dict]) -> list:
     """Which parts of the measuring stick moved between two runs, in words.
 
-    Returns [] when they match, when either side is missing (a run recorded
-    before fingerprints existed can't be compared — and saying nothing is
-    honest, where claiming "unchanged" would not be), and naturally when
-    only `testCaseCount` differs, which `testCases` already covers."""
-    if not current or not previous:
+    Returns [] when they match AND when comparability is unknown — saying
+    nothing is honest there, where either "unchanged" or a list of changes
+    would be invented. Also naturally ignores `testCaseCount`, which
+    `testCases` already covers."""
+    if comparable(current, previous) is not False:
         return []
     return [label for key, label in MEASUREMENT_LABELS.items()
             if current.get(key) and previous.get(key) and current[key] != previous[key]]

@@ -18,6 +18,7 @@ from . import cache as cache_module
 from . import catalogue as catalogue_module
 from . import config as config_module
 from . import guardrails as guardrails_module
+from . import health as health_module
 from . import notify as notify_module
 from . import rank as rank_module
 from . import state as state_module
@@ -62,7 +63,8 @@ async def execute(uc: UseCase, cat: dict, candidates: list, *,
                   out_dir: Optional[Path] = None,
                   resample_candidates: bool = False,
                   use_cache: bool = False,
-                  cache_root: Optional[Path] = None) -> dict:
+                  cache_root: Optional[Path] = None,
+                  health_check: bool = True) -> dict:
     """Runs the bench, ranks it, deepens judging on just the tie zone,
     saves the run file, records state, and notifies if a candidate is
     pending AND hasn't already been notified about. Returns everything a
@@ -87,11 +89,50 @@ async def execute(uc: UseCase, cat: dict, candidates: list, *,
     The cache object is created HERE, per run, and passed down — never a
     module-level switch. The dashboard runs benches in worker threads, and
     two concurrent runs (one replaying, one measuring) must not be able to
-    reach into each other's setting."""
+    reach into each other's setting.
+
+    `health_check` PROBES EVERY CANDIDATE AND THE JUDGE FIRST, one tiny call
+    each, and drops only the ones the platform says are GONE (404). On by
+    default because the failure it prevents — minutes of a run spent
+    discovering a deprecated id, or worse, every generation call paid for and
+    then thrown away by a dead judge — costs far more than the probes. It
+    never claims a passing model will succeed on the real test cases; see
+    `health.py`. Whatever it excludes is returned and saved, never silently
+    dropped."""
     cache = cache_module.Cache(cache_root) if use_cache else None
+    provider_by_model = catalogue_module.provider_map(cat)
+
+    health = []
+    excluded = []
+    if health_check and candidates:
+        # THE JUDGE IS PROBED TOO, and it's the one that can waste an entire
+        # run: if the judge is gone, every candidate answer gets bought and
+        # then scored as `judge_failed`. Refused up front instead, loudly,
+        # the same way `check_judge_not_candidate` refuses rather than warns.
+        judge_model = uc.judge_model
+        health = await health_module.probe_all(
+            candidates + [judge_model], provider_by_model=provider_by_model)
+        judge_health = next((h for h in health if h["model"] == judge_model), None)
+        if judge_health and judge_health["status"] == health_module.FATAL:
+            raise RuntimeError(
+                f"the judge ({judge_model}) is gone: {judge_health['detail']}. "
+                f"Nothing was spent. Every candidate would have been generated "
+                f"and then failed to score, so this refuses instead of running. "
+                f"Point `judgeModel` at a live model and try again.")
+
+        candidate_health = [h for h in health if h["model"] != judge_model]
+        usable, fatal = health_module.partition(candidate_health)
+        excluded = fatal
+        candidates = [m for m in candidates if m in set(usable)]
+        if not candidates:
+            raise RuntimeError(
+                f"every candidate is gone from its platform "
+                f"({', '.join(h['model'] for h in fatal)}). Nothing was spent. "
+                f"Re-poll the catalogue (`catalogue --refresh`) — these ids were "
+                f"probably deprecated since it was last fetched.")
+
     result = await bench_module.run(
-        candidates, uc, provider_by_model=catalogue_module.provider_map(cat),
-        cache=cache)
+        candidates, uc, provider_by_model=provider_by_model, cache=cache)
 
     state = state_module.load(uc.name, state_root)
     board = rank_module.build(result, cat, approved_model=state.get("approvedModel"),
@@ -118,8 +159,14 @@ async def execute(uc: UseCase, cat: dict, candidates: list, *,
     out_dir = out_dir or (Path(__file__).resolve().parent.parent / "out")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{stamp}_{uc.name}.json"
+    # `health` IS SAVED WITH THE RUN, not just returned. A candidate dropped
+    # before the bench never appears on the leaderboard, and a candidate that
+    # vanishes with no explanation is the exact failure this project has
+    # already had to fix once in bulk-create. The run page reads this back
+    # and lists every exclusion with its reason.
     out_path.write_text(
-        json.dumps({"bench": result, "board": board}, indent=2, ensure_ascii=False),
+        json.dumps({"bench": result, "board": board, "health": health},
+                   indent=2, ensure_ascii=False),
         encoding="utf-8")
 
     # WHAT CHANGED SINCE THE LAST RUN, read BEFORE this run is appended to
@@ -145,4 +192,5 @@ async def execute(uc: UseCase, cat: dict, candidates: list, *,
     return {"stamp": stamp, "board": board, "state": new_state, "report": text,
             "out_path": out_path, "notified": notified,
             "cache_stats": result.get("cacheStats"),
-            "measurement_changes": measurement_changes}
+            "measurement_changes": measurement_changes,
+            "health": health, "excluded": excluded}

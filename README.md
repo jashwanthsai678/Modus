@@ -274,11 +274,61 @@ under two different names was its own small source of confusion.
 Useful `run` flags: `--tier {free,paid-low,paid-mid,paid-high}` to restrict
 which price band is benched, `--models a,b,c` to bench an explicit list
 instead of the guardrail-filtered shortlist, `--limit N` to cap candidate
-count, `--yes` to skip the interactive cost confirmation (for scheduled
+count, `--cache` to reuse answers already bought, `--no-health-check` to skip
+the pre-run probe, `--yes` to skip the interactive cost confirmation (for scheduled
 jobs — a `scheduler` run always behaves as if `--yes` was passed, since
 nobody is there to answer). If installed with `pip install -e .`, every
 command above also works as `modelcicd <command>` instead of
 `python -m modelcicd.cli <command>`.
+
+---
+
+## Health check — catch a dead model before spending a run on it
+
+A deprecated model id keeps looking fine everywhere it's read from. It sits
+in the catalogue, passes every guardrail, gets picked as a candidate — and
+only fails on a real call, minutes into a run. A dead **judge** is worse:
+every answer gets paid for and then scored as a failure, so the whole run is
+wasted.
+
+So a run probes each candidate and the judge with one trivial call first. If
+the judge is gone it refuses outright, before spending anything. Off with
+`--no-health-check`; the cost is disclosed in the preview like everything
+else that spends.
+
+**Only a provable death drops a candidate — and the HTTP status does not tell
+you that.** Checked live against OpenRouter:
+
+| status | platform's message | truth |
+|---|---|---|
+| `404` | "unavailable for free… use this slug instead: `minimax/minimax-m3`" | **gone** — and the message names the fix |
+| `404` | "Provider returned error" · `provider_name: Nvidia` | **not gone** — the upstream host had a moment |
+| `400` | "`vendor/x` is not a valid model ID" | **gone** — never existed |
+
+Two 404s meaning opposite things isn't an edge case, it's the normal
+situation. The first version of this excluded on 404 and would have dropped
+this project's own configured judge — whose 404 was a transient Nvidia error
+— while missing a fake id entirely, because OpenRouter refuses those with a
+400.
+
+So the decision reads the platform's message, and it's deliberately
+**one-directional**: a message must match a known-permanent phrase to be
+fatal, and anything unrecognized falls through to *unknown*, which never
+excludes. A new phrasing costs a wasted run rather than a working model
+silently dropped. Rate limits and timeouts never exclude either — a 429 is a
+fact about the minute, not the model.
+
+**A passing probe proves one thing only: the id exists and answered.** It is
+*not* a prediction that the model will handle your test cases. This project
+already learned that the hard way — a model that answered a trivial probe
+went on to fail the real scan prompt outright, narrating past the token limit
+before reaching any JSON. A health check implying more than it knows would be
+worse than none, because someone would trust it.
+
+Nothing is cached here, deliberately: the whole point is to know what's dead
+*now*. And whatever gets excluded is listed on the run page with the
+platform's own words — a candidate that vanishes with no explanation is the
+failure mode this project keeps having to design against.
 
 ---
 
@@ -508,6 +558,7 @@ modelcicd/
   endpoint_client.py the one place this project calls a use case's OWN live endpoint
   sandbox.py         run one candidate (through ITS OWN platform) or the live endpoint, against the test cases
   assertions.py      deterministic checks on an answer — decided in code, no model, free
+  health.py          one tiny probe per model before a run — drops only what's provably gone
   judge.py           blind, pinned-judge scoring against the use case's rubric
   bench.py           orchestrates sandbox + judge across all candidates + the endpoint
   rank.py            builds the per-tier leaderboard

@@ -26,6 +26,7 @@ from flask import Flask, abort, redirect, render_template, request, url_for
 
 from . import code_patch as code_patch_module
 from . import config as config_module
+from . import health as health_module
 from . import onboarding as onboarding_module
 from . import project as project_module
 from . import secrets as secrets_module
@@ -51,10 +52,11 @@ def _best_per_run(history: list) -> list:
         scores = [row.get("score") for band in (run.get("tiers") or {}).values()
                   for row in band if row.get("score") is not None]
         if scores:
-            points.append({
-                "score": max(scores),
-                "fingerprint": (run.get("measurement") or {}).get("combined"),
-            })
+            # The whole fingerprint, not just the combined hash — the
+            # scheme version is part of deciding comparability, and
+            # `config.comparable` is the single place that decides it.
+            points.append({"score": max(scores),
+                           "fingerprint": run.get("measurement")})
     return points
 
 
@@ -95,35 +97,30 @@ def _sparkline(points: list, *, width: int = 90, height: int = 26, pad: int = 4
     # which is where comparability actually lives. Segments built from runs
     # of points can't express "dashed here, solid there" without splitting
     # on the same boundary twice.
-    edges, breaks, unverified = [], 0, 0
-    for i in range(1, n):
-        prev_fp, this_fp = points[i - 1]["fingerprint"], points[i]["fingerprint"]
-        if prev_fp is None or this_fp is None:
-            state = "unverified"
-            unverified += 1
-        elif prev_fp == this_fp:
-            state = "comparable"
-        else:
-            state = "broken"
-            breaks += 1
-        if state != "broken":
-            edges.append({"points": f"{xs[i-1]:.1f},{ys[i-1]:.1f} {xs[i]:.1f},{ys[i]:.1f}",
-                         "verified": state == "comparable"})
-
-    # A point with no edge on either side would otherwise be invisible.
-    linked = set()
-    for i in range(1, n):
-        prev_fp, this_fp = points[i - 1]["fingerprint"], points[i]["fingerprint"]
-        if not (prev_fp is not None and this_fp is not None and prev_fp != this_fp):
-            linked.update((i - 1, i))
+    # `config.comparable` returns True / False / None, and each maps to one
+    # of the three renderings. Read from there rather than compared here, so
+    # this and the run page's warning can't disagree.
+    verdicts = [config_module.comparable(points[i]["fingerprint"],
+                                         points[i - 1]["fingerprint"])
+                for i in range(1, n)]
+    edges, linked = [], set()
+    for i, verdict in enumerate(verdicts, start=1):
+        if verdict is False:                        # provably a different scale
+            continue
+        edges.append({"points": f"{xs[i-1]:.1f},{ys[i-1]:.1f} {xs[i]:.1f},{ys[i]:.1f}",
+                     "verified": verdict is True})
+        linked.update((i - 1, i))
+    breaks = sum(1 for v in verdicts if v is False)
+    unverified = sum(1 for v in verdicts if v is None)
 
     note = ""
     if breaks:
         note += (f"  ({breaks} break{'s' if breaks != 1 else ''} — the rubric, checks, "
                 f"test cases or judge changed, so those scores are not on the same scale)")
     if unverified:
-        note += (f"  ({unverified} dashed — recorded before runs carried a "
-                f"fingerprint, so comparability is unknown, not confirmed)")
+        note += (f"  ({unverified} dashed — those runs carry no fingerprint, or "
+                f"one from an older scheme, so comparability is unknown, not "
+                f"confirmed)")
 
     return {"width": width, "height": height,
             "edges": edges,
@@ -837,9 +834,18 @@ def create_app() -> Flask:
                 break
         # A pre-fingerprint run has nothing to show and nothing to compare —
         # reported as unknown, never as "unchanged".
+        # Candidates the health probe dropped before the bench — they have no
+        # leaderboard row, so this is the only place they appear at all.
+        health = data.get("health") or []
+        judge_id = board.get("judge")
+        excluded = [h for h in health
+                    if h.get("status") == health_module.FATAL and h.get("model") != judge_id]
+        kept_despite = [h for h in health
+                        if h.get("status") in ("rate_limited", "unknown")]
         return render_template("run.html", board=board, tiers=tiers, filename=p.name,
                               project=project, price_sensitivity=price_sensitivity,
                               tc_inputs=tc_inputs, detail_by_model=detail_by_model,
+                              excluded=excluded, kept_despite=kept_despite,
                               measurement=measurement,
                               measurement_labels=config_module.MEASUREMENT_LABELS,
                               drifted_from_previous=drifted_from_previous)
@@ -967,15 +973,23 @@ def create_app() -> Flask:
                                              "for that tier/limit — nothing to run"),
                             code=303)
         use_cache = request.form.get("use_cache") == "on"
+        health_check = request.form.get("health_check") == "on"
         try:
             result = asyncio.run(runner_module.execute(
                 uc, cat, candidates, state_root=project_module.state_dir(project),
-                out_dir=project_module.out_dir(project), use_cache=use_cache))
+                out_dir=project_module.out_dir(project), use_cache=use_cache,
+                health_check=health_check))
         except Exception as exc:                        # noqa: BLE001
             return redirect(url_for("run_form", project=project, name=name,
                                     tier=tier, limit=limit, error=str(exc)), code=303)
         pending = (result.get("state") or {}).get("pending")
-        flash = f"benched {len(candidates)} candidate(s)"
+        excluded = result.get("excluded") or []
+        flash = f"benched {len(candidates) - len(excluded)} candidate(s)"
+        if excluded:
+            # NAMED IN THE FLASH. A candidate dropped before the bench isn't
+            # on the leaderboard, so without this it just isn't there.
+            flash += (f" — dropped {len(excluded)} the platform no longer has: "
+                      f"{', '.join(h['model'] for h in excluded)}")
         changed = result.get("measurement_changes")
         if changed:
             # SAID AT THE MOMENT IT HAPPENS. Someone who just edited a rubric

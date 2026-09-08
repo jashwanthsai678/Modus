@@ -18,6 +18,44 @@
 </div>
 {% endif %}
 
+{% if excluded %}
+{# THE ONLY PLACE THESE APPEAR. A candidate the health probe dropped has no
+   leaderboard row at all, and a candidate that vanishes without explanation
+   is precisely the failure this project has already had to fix elsewhere. #}
+<div class="panel">
+  <div class="panel-head">
+    <h3>{{ excluded|length }} candidate{{ 's' if excluded|length != 1 else '' }} dropped before the run</h3>
+    <span class="badge none">not benched</span>
+  </div>
+  <p class="muted">A tiny probe call found these ids are gone from their platform — deprecated or
+    renamed — so nothing was spent generating answers from them. They have no row below.</p>
+  <div class="stack">
+    {% for h in excluded %}
+    <div><span class="mono">{{ h.model }}</span> <span class="muted">— {{ h.detail }}</span></div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% if kept_despite %}
+<div class="panel">
+  <div class="panel-head">
+    <h3>{{ kept_despite|length }} probe{{ 's' if kept_despite|length != 1 else '' }} didn't come back clean</h3>
+    <span class="badge tie">kept anyway</span>
+  </div>
+  <p class="muted">These were benched regardless. A rate limit or a timeout is a fact about one
+    moment, not proof a model is gone — dropping a candidate on that would shrink the field on a
+    guess. Their real results are on the leaderboard below, with their own errors if they failed.</p>
+  <div class="stack">
+    {% for h in kept_despite %}
+    <div><span class="mono">{{ h.model }}</span>
+      <span class="badge tie">{{ h.status }}</span>
+      <span class="muted">— {{ h.detail }}</span></div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 {% if measurement %}
 <div class="panel">
   <div class="panel-head">

@@ -74,6 +74,24 @@
       and candidate spread) never read the cache, so they stay real.
     </p>
 
+    {# Disclosed with its cost, like everything else that spends. The probe
+       is tiny, but "tiny" is still not "free", and this project's habit is
+       to say so rather than round it down to nothing. #}
+    <div class="checkline" style="margin: var(--sp-3) 0;">
+      <input id="health_check" name="health_check" type="checkbox" checked>
+      <label for="health_check" style="margin:0;">Check every model is still alive first
+        <span class="badge tie">+{{ (candidates|length) + 1 }} tiny calls</span>
+      </label>
+    </div>
+    <p class="hint" style="margin: 0 0 var(--sp-4);">
+      One trivial probe per candidate, plus the judge, to drop ids the platform has deprecated
+      before a full run spends minutes discovering them. If the <strong>judge</strong> is dead this
+      refuses outright — otherwise every answer gets paid for and then scored as a failure.
+      A probe passing only means the id exists and answered; it is <em>not</em> a promise the model
+      will handle your real test cases. Only a definite "this id is gone" drops a candidate — a
+      rate limit or a timeout never does.
+    </p>
+
     <button type="submit" class="btn btn-primary">Run {{ candidates|length }} candidate(s)</button>
   </form>
   {% else %}

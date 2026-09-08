@@ -51,8 +51,9 @@ except ImportError:
 
 from modelcicd import (cache as cache_module, catalogue as catalogue_module,     # noqa: E402
                        config as config_module, guardrails as guardrails_module,
-                       onboarding as onboarding_module, project as project_module,
-                       runner as runner_module, state as state_module)
+                       health as health_module, onboarding as onboarding_module,
+                       project as project_module, runner as runner_module,
+                       state as state_module)
 
 OUT = _ROOT / "out"
 CATALOGUE_PATH = OUT / "catalogue.json"
@@ -400,6 +401,11 @@ def cmd_run(args) -> int:
               "with this same prompt, input, and rubric. Answers reused this way "
               "are a REPLAY, not a fresh measurement; the saved run file records "
               "how many were.")
+    if not args.no_health_check:
+        print(f"           + {len(candidates) + 1} tiny probe call(s) first "
+              f"(each candidate, plus the judge) to drop ids the platform has "
+              f"deprecated before spending a full run discovering them. "
+              f"--no-health-check to skip.")
     for c in candidates[:12]:
         print(f"   {c}")
     if len(candidates) > 12:
@@ -423,10 +429,23 @@ def cmd_run(args) -> int:
     try:
         result = asyncio.run(runner_module.execute(
             uc, cat, candidates, state_root=_state_root(args), out_dir=_out_dir(args),
-            resample_candidates=args.resample_shortlist, use_cache=args.cache))
+            resample_candidates=args.resample_shortlist, use_cache=args.cache,
+            health_check=not args.no_health_check))
     except Exception as exc:                        # noqa: BLE001
         print(f"\nrefused or failed: {exc}")
         return 3
+
+    health = result.get("health") or []
+    if health:
+        print(f"\nhealth: {health_module.summary(health)}")
+        # NAMED, NOT COUNTED. A candidate dropped before the bench never
+        # reaches the leaderboard, so this is the only place it's visible.
+        for h in result.get("excluded") or []:
+            print(f"   dropped {h['model']} — {h['detail']}")
+        for h in health:
+            if h["status"] in ("rate_limited", "unknown"):
+                print(f"   kept {h['model']} despite a {h['status']} probe "
+                      f"({h['detail'][:80]}) — not proof it's gone, so it still ran")
 
     print()
     print(result["report"])
@@ -782,6 +801,12 @@ def build_parser() -> argparse.ArgumentParser:
                         "on a rubric nearly free. Off by default: a replayed answer "
                         "is not a fresh measurement of what that model does today. "
                         "The saved run file records how many calls were replays.")
+    r.add_argument("--no-health-check", action="store_true",
+                   help="skip the tiny probe call per candidate (and the judge) "
+                        "that drops ids the platform has deprecated. The probe "
+                        "costs a few tokens each and prevents spending a whole "
+                        "run discovering a dead model — or, if the JUDGE is dead, "
+                        "paying for every answer and scoring none of them.")
     r.add_argument("--project", default=None,
                   help="scope state/out and candidate providers to this connected project")
 
