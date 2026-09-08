@@ -1,31 +1,58 @@
 {% extends "base.html" %}
 {% block title %}Model CICD{% endblock %}
 {% block content %}
-<h1>Model CICD</h1>
-<p class="muted">Continuous model discovery, sandboxed benchmarking, and human-approved
-  promotion for every place your application calls an LLM.</p>
-
-<div class="card">
-  <a class="btn btn-primary" href="{{ url_for('connect_project_form') }}" style="font-size: 15px; padding: 10px 20px;">+ New Project</a>
-  <span class="muted" style="margin-left: 10px;">connect an application to start tracking its AI features</span>
-  {% if pending_count %}
-  <a class="link" style="margin-left: 16px;" href="{{ url_for('pending_list') }}">{{ pending_count }} pending review{{ 's' if pending_count != 1 else '' }} &rarr;</a>
-  {% endif %}
+<div class="page-head">
+  <h1>Model CICD</h1>
+  <p class="sub">Continuous model discovery, sandboxed benchmarking, and human-approved
+    promotion for every place your application calls an LLM.</p>
 </div>
 
+{% if pending_count %}
+<div class="card flash-success" style="display:flex; align-items:center; justify-content:space-between; gap:var(--sp-3);">
+  <span><strong>{{ pending_count }}</strong> candidate{{ 's' if pending_count != 1 else '' }}
+    waiting for your review — nothing reaches production until you approve it.</span>
+  <a class="btn" href="{{ url_for('pending_list') }}">Review now</a>
+</div>
+{% endif %}
+
 {% if projects %}
-<h2>Your projects</h2>
-<table>
-  <tr><th>Project</th><th>Description</th><th>AI features</th><th>Connected</th></tr>
-  {% for p in projects %}
-  <tr>
-    <td><a class="link" href="{{ url_for('project_detail', slug=p.slug) }}">{{ p.name }}</a></td>
-    <td class="muted">{{ p.description or '—' }}</td>
-    <td>{{ p.use_case_count }}</td>
-    <td class="muted">{{ p.created_at[:10] if p.created_at else '—' }}</td>
-  </tr>
-  {% endfor %}
-</table>
+<div class="panel">
+  <div class="stat-grid">
+    <div>
+      <div class="stat-label">Projects</div>
+      <div class="stat-value is-big">{{ projects|length }}</div>
+    </div>
+    <div>
+      <div class="stat-label">AI features tracked</div>
+      <div class="stat-value is-big">{{ projects|sum(attribute='use_case_count') }}</div>
+    </div>
+    <div>
+      <div class="stat-label">Pending review</div>
+      <div class="stat-value is-big">{{ pending_count }}</div>
+    </div>
+  </div>
+</div>
+
+<div class="panel panel-flush">
+  <table>
+    <tr><th>Project</th><th>Description</th><th class="num">AI features</th><th>Connected</th></tr>
+    {% for p in projects %}
+    <tr>
+      <td><a class="link" href="{{ url_for('project_detail', slug=p.slug) }}">{{ p.name }}</a></td>
+      <td class="muted">{{ p.description or '—' }}</td>
+      <td class="num">{{ p.use_case_count }}</td>
+      <td class="muted num">{{ p.created_at[:10] if p.created_at else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% else %}
+<div class="panel">
+  <p><strong>No application connected yet.</strong> Connect one to start tracking which
+    model each of its AI features uses — and whether something cheaper would do the job
+    just as well.</p>
+  <a class="btn btn-primary" href="{{ url_for('connect_project_form') }}">Connect an application</a>
+</div>
 {% endif %}
 
 {% if legacy_cases %}
@@ -38,61 +65,68 @@
 {% endif %}
 
 <h2>What this is</h2>
-<div class="card">
-  <p>A self-hosted tool that continuously discovers, benchmarks, and lets you approve
-    which LLM your application actually uses — separately, for each specific feature
-    that calls one. It doesn't look for "the best model" in general; it finds the best
-    model <strong>for one job</strong>, tested against that job's own test cases and
-    scored against a rubric written for that job.</p>
-  <p class="muted" style="margin-bottom:0;">
-    <code>from modelcicd.resolver import resolve</code><br>
-    <code>model = resolve("support_bot_reply", fallback="gpt-4o-mini")</code>
-  </p>
+<p>A self-hosted tool that continuously discovers, benchmarks, and lets you approve which
+  LLM your application actually uses — separately, for each specific feature that calls
+  one. It doesn't look for "the best model" in general; it finds the best model
+  <strong>for one job</strong>, tested against that job's own test cases and scored
+  against a rubric written for that job.</p>
+<div class="panel">
+  <div class="stat-label">Your integration point, in full</div>
+  <div class="mono" style="margin-top:var(--sp-2); line-height:1.7;">
+    from modelcicd.resolver import resolve<br>
+    model = resolve("support_bot_reply", fallback="gpt-4o-mini")
+  </div>
 </div>
 
-<h2>Why people use it</h2>
-<div class="card">
-  <ul style="margin:0;">
-    <li>New, cheaper, or better models ship every few weeks — nobody manually re-checks,
-      so most teams either overpay or never find out something better exists.</li>
-    <li>A quality regression from a model swap is usually invisible until a user hits it.</li>
-    <li>"Why are we using this model" is usually answered from memory, not evidence.</li>
-    <li>A silent model swap in production is a real risk — it should require the same
-      sign-off a dependency upgrade would get.</li>
-  </ul>
+<h2>Why it exists</h2>
+<ul class="stack-tight" style="margin:0 0 var(--sp-5); padding-left:18px;">
+  <li>New, cheaper, or better models ship every few weeks — nobody manually re-checks,
+    so most teams either overpay or never find out something better exists.</li>
+  <li>A quality regression from a model swap is usually invisible until a user hits it.</li>
+  <li>"Why are we using this model" is usually answered from memory, not evidence.</li>
+  <li>A silent model swap in production should require the same sign-off a dependency
+    upgrade would get.</li>
+</ul>
+
+<h2>What it gives you</h2>
+<div class="stat-grid" style="margin-bottom:var(--sp-6);">
+  <div class="panel">
+    <div class="stat-label">Lower cost, not guesswork</div>
+    <p class="muted" style="margin:0;">Every candidate is filtered against your price
+      ceiling before a cent is spent, and ranked only within its own price tier.</p>
+  </div>
+  <div class="panel">
+    <div class="stat-label">Quality protected too</div>
+    <p class="muted" style="margin:0;">Nothing is proposed without first being scored,
+      blind, against the rubric that feature's own owner wrote.</p>
+  </div>
+  <div class="panel">
+    <div class="stat-label">A record that outlives memory</div>
+    <p class="muted" style="margin:0;">Every run, candidate, score, and approval is saved
+      with a timestamp and the judge's stated reasoning.</p>
+  </div>
+  <div class="panel">
+    <div class="stat-label">One decision point</div>
+    <p class="muted" style="margin:0;">A human sees the evidence and clicks Approve.
+      Nothing about production changes silently.</p>
+  </div>
 </div>
 
-<h2>What value it adds</h2>
-<div class="card">
-  <ul style="margin:0;">
-    <li><strong>Lower cost without guessing</strong> — every candidate is filtered by your
-      price ceiling before anything is spent.</li>
-    <li><strong>Quality protected, not just cost</strong> — nothing gets proposed without
-      first being scored, blind, against the rubric that feature's own owner wrote.</li>
-    <li><strong>A record that survives memory</strong> — every run, candidate, score, and
-      approval is saved with a timestamp.</li>
-    <li><strong>One decision point</strong> — a human sees the evidence and clicks Approve;
-      nothing changes silently.</li>
-  </ul>
-</div>
+<h2>Getting started</h2>
+<ol class="stack-tight" style="margin:0 0 var(--sp-5); padding-left:18px;">
+  <li><strong>Connect an application</strong> — optionally with its repo, for scanning and
+    later patching.</li>
+  <li><strong>Find its AI features</strong> — scan the repo, or add one by hand through a
+    guided form. No YAML to write.</li>
+  <li><strong>Run the bench</strong> — the only step that spends money, and it shows the
+    cost and asks first.</li>
+  <li><strong>Review and approve</strong> — the leaderboard shows every candidate's real
+    answer and score. Nothing switches on its own.</li>
+</ol>
 
-<h2>How to use it — from here</h2>
-<div class="card">
-  <ol style="margin:0;">
-    <li><strong>+ New Project</strong> above — connect an application (optionally with its
-      repo, for scanning and later patching).</li>
-    <li>Scan the repo for AI features already in the code, or add one by hand — a guided
-      form, no YAML to write.</li>
-    <li>Run the bench (the only step that spends money — it shows the cost and asks first).</li>
-    <li>Review the leaderboard and click Approve on whichever candidate should go to
-      production. Nothing switches on its own.</li>
-  </ol>
-</div>
-
-<h2>How to use it — from the CLI</h2>
-<div class="card">
-  <p class="muted">Same tool, same files — every command above has a CLI equivalent, and
-    either one always leaves the other consistent:</p>
-  <pre style="overflow-x: auto; white-space: pre; font-family: monospace; font-size: 12.5px; margin: 0;">{{ quickstart }}</pre>
-</div>
+<details class="panel">
+  <summary>Prefer the CLI? Every action above has an equivalent command</summary>
+  <p class="muted">Same tool, same files — either door always leaves the other consistent.</p>
+  <pre class="mono" style="overflow-x:auto; white-space:pre; margin:0; line-height:1.55;">{{ quickstart }}</pre>
+</details>
 {% endblock %}

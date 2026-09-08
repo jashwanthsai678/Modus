@@ -1,10 +1,20 @@
 {% extends "base.html" %}
 {% block title %}{{ project.name }} — Model CICD{% endblock %}
 {% block content %}
-<p class="muted"><a class="link" href="{{ url_for('index') }}">&larr; all projects</a></p>
-<h1>{{ project.name }}</h1>
-{% if project.description %}<p class="muted">{{ project.description }}</p>{% endif %}
-<p class="muted">providers: {{ project.providers|join(', ') }}{% if project.repo_path %} &middot; repo: {{ project.repo_path }}{% endif %}</p>
+<p class="crumb"><a class="link" href="{{ url_for('index') }}">&larr; All projects</a></p>
+<div class="page-head">
+  <h1>{{ project.name }}</h1>
+  {% if project.description %}<p class="sub">{{ project.description }}</p>{% endif %}
+  <p class="muted" style="margin:var(--sp-2) 0 0;">
+    <span class="stat-label" style="display:inline; margin:0;">Marketplaces</span>
+    <span class="mono">{{ project.providers|join(', ') }}</span>
+    {% if project.repo_path %}
+    <span class="sep"> &nbsp;·&nbsp; </span>
+    <span class="stat-label" style="display:inline; margin:0;">Repo</span>
+    <span class="mono">{{ project.repo_path }}</span>
+    {% endif %}
+  </p>
+</div>
 
 {% set ns = namespace(found_current=false) %}
 <div class="stepper">
@@ -43,53 +53,62 @@
   </div>
 </div>
 
-<div class="card">
-  <a class="btn btn-primary" href="{{ url_for('new_use_case', slug=project.slug) }}">+ Add an AI feature</a>
-  <a class="btn" href="{{ url_for('project_overview', slug=project.slug) }}">Overview</a>
-  {% if project.repo_path and has_scan_results %}
-  <a class="btn" href="{{ url_for('scan_results', slug=project.slug) }}">View scan results</a>
-  <a class="btn" href="{{ url_for('scan_repo_form', slug=project.slug) }}">Scan again</a>
-  {% elif project.repo_path %}
-  <a class="btn" href="{{ url_for('scan_repo_form', slug=project.slug) }}">Scan repo for AI features</a>
-  {% endif %}
-  <a class="btn" href="{{ url_for('project_defaults', slug=project.slug) }}">Project defaults</a>
-  <span class="muted" style="margin-left: 10px; display: block; margin-top: 8px;">or from the CLI:
-    <code>python -m modelcicd.cli wizard --project {{ project.slug }}</code></span>
+<div class="panel">
+  <div class="toolbar">
+    <a class="btn btn-primary" href="{{ url_for('new_use_case', slug=project.slug) }}">Add an AI feature</a>
+    <a class="btn" href="{{ url_for('project_overview', slug=project.slug) }}">Overview</a>
+    {% if project.repo_path and has_scan_results %}
+    <a class="btn" href="{{ url_for('scan_results', slug=project.slug) }}">View scan results</a>
+    <a class="btn" href="{{ url_for('scan_repo_form', slug=project.slug) }}">Scan again</a>
+    {% elif project.repo_path %}
+    <a class="btn" href="{{ url_for('scan_repo_form', slug=project.slug) }}">Scan repo for AI features</a>
+    {% endif %}
+    <a class="btn" href="{{ url_for('project_defaults', slug=project.slug) }}">Project defaults</a>
+  </div>
+  <p class="muted" style="margin:var(--sp-3) 0 0;">Or from the CLI:
+    <code>python -m modelcicd.cli wizard --project {{ project.slug }}</code></p>
 </div>
 
 {% if defined_not_run %}
-<div class="card">
-  <strong>{{ defined_not_run|length }} feature(s) defined, not benched yet</strong> — these have a
-  <code>use_case.yaml</code> but no run has happened for them, so they don't have a row below yet.
-  <ul style="margin: 8px 0 0; padding-left: 18px;">
+<div class="panel">
+  <div class="panel-head">
+    <h3>{{ defined_not_run|length }} feature{{ 's' if defined_not_run|length != 1 else '' }} defined, not benched yet</h3>
+    <span class="badge none">awaiting first run</span>
+  </div>
+  <p class="muted">These have a <code>use_case.yaml</code> but no run yet, so they don't
+    appear in the table below until one happens.</p>
+  <div class="stack">
     {% for name in defined_not_run %}
-    <li><code>{{ name }}</code> —
-      <a class="link" href="{{ url_for('run_form', project=project.slug, name=name) }}">Run</a>
-      &middot; or from the CLI:
-      <code>python -m modelcicd.cli run --use-case {{ project.slug }}/use_cases/{{ name }}.yaml --project {{ project.slug }}</code></li>
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:var(--sp-3); flex-wrap:wrap;">
+      <span class="mono">{{ name }}</span>
+      <a class="btn btn-sm" href="{{ url_for('run_form', project=project.slug, name=name) }}">Run bench</a>
+    </div>
     {% endfor %}
-  </ul>
+  </div>
 </div>
 {% endif %}
 
 {% if not cases and not defined_not_run %}
-<p class="muted">No AI feature has a state file yet — add one above, then run its bench.</p>
+<div class="panel"><p class="empty">No AI feature defined yet — add one above to get started.</p></div>
 {% elif cases %}
+<h2>Tracked features</h2>
+<div class="panel panel-flush">
 <table>
-  <tr><th>AI feature</th><th>Approved model</th><th>Score</th><th>Pending</th><th>Runs</th><th>Trend</th></tr>
+  <tr><th>AI feature</th><th>Approved model</th><th class="num">Score</th><th>Pending</th><th class="num">Runs</th><th>Trend</th></tr>
   {% for c in cases %}
   <tr>
     <td><a class="link" href="{{ url_for('usecase', name=c.useCase, project=project.slug) }}">{{ c.useCase }}</a></td>
-    <td>{{ c.approvedModel or '—' }}</td>
-    <td>{{ c.approvedScore if c.approvedScore is not none else '—' }}</td>
+    <td class="mono">{{ c.approvedModel or '—' }}</td>
+    <td class="num">{{ '%.2f'|format(c.approvedScore) if c.approvedScore is not none else '—' }}</td>
     <td>
       {% if c.pending %}
-        <span class="badge pending">{{ c.pending.model }} ({{ c.pending.score }})</span>
+        <span class="badge pending">{{ c.pending.model }}</span>
+        <span class="num muted"> {{ '%.2f'|format(c.pending.score) }}</span>
       {% else %}
         <span class="badge none">none</span>
       {% endif %}
     </td>
-    <td>{{ (c.history or [])|length }}</td>
+    <td class="num">{{ (c.history or [])|length }}</td>
     <td>
       {% if c.sparkline %}
       <svg width="{{ c.sparkline.width }}" height="{{ c.sparkline.height }}" role="img" class="sparkline">
@@ -99,11 +118,12 @@
         <circle cx="{{ c.sparkline.last_x }}" cy="{{ c.sparkline.last_y }}" r="4" style="fill: var(--accent-bright)" />
       </svg>
       {% else %}
-      <span class="muted">not enough runs yet</span>
+      <span class="muted">—</span>
       {% endif %}
     </td>
   </tr>
   {% endfor %}
 </table>
+</div>
 {% endif %}
 {% endblock %}
