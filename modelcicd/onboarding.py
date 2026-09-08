@@ -23,6 +23,12 @@ def text(*, dashboard_host: str = DEFAULT_HOST, dashboard_port: int = DEFAULT_PO
        python -m modelcicd.cli scan-repo --project my-app
        python -m modelcicd.cli wizard --project my-app --from-scan 0
 
+     Found more than one? Set the project's shared rubric/price/judge once
+     (a template every new feature starts from) and turn every scan result
+     into a feature at once, with test cases drafted from each one's prompt
+     — reviewed and editable before anything saves, from the dashboard's
+     "Create AI features from all N candidate(s)" button.
+
   3. Or define an AI feature directly — a guided flow either way, no YAML
      to hand-write:
        python -m modelcicd.cli wizard --project my-app

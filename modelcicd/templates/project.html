@@ -6,9 +6,49 @@
 {% if project.description %}<p class="muted">{{ project.description }}</p>{% endif %}
 <p class="muted">providers: {{ project.providers|join(', ') }}{% if project.repo_path %} &middot; repo: {{ project.repo_path }}{% endif %}</p>
 
+{% set ns = namespace(found_current=false) %}
+<div class="stepper">
+  <div class="step is-done">
+    <div class="step-dot">&check;</div>
+    <div class="step-label">Connect</div>
+  </div>
+  {% if project.repo_path %}
+  <div class="step-line {{ 'is-done' if steps.scanned else '' }}"></div>
+  {% set is_current = not steps.scanned and not ns.found_current %}
+  {% if is_current %}{% set ns.found_current = true %}{% endif %}
+  <div class="step {{ 'is-done' if steps.scanned else ('is-current' if is_current else '') }}">
+    <div class="step-dot">{{ '✓' if steps.scanned else '2' }}</div>
+    <div class="step-label">Scan</div>
+  </div>
+  {% endif %}
+  <div class="step-line {{ 'is-done' if steps.defined else '' }}"></div>
+  {% set is_current = not steps.defined and not ns.found_current %}
+  {% if is_current %}{% set ns.found_current = true %}{% endif %}
+  <div class="step {{ 'is-done' if steps.defined else ('is-current' if is_current else '') }}">
+    <div class="step-dot">{{ '✓' if steps.defined else '3' }}</div>
+    <div class="step-label">Define</div>
+  </div>
+  <div class="step-line {{ 'is-done' if steps.benched else '' }}"></div>
+  {% set is_current = not steps.benched and not ns.found_current %}
+  {% if is_current %}{% set ns.found_current = true %}{% endif %}
+  <div class="step {{ 'is-done' if steps.benched else ('is-current' if is_current else '') }}">
+    <div class="step-dot">{{ '✓' if steps.benched else '4' }}</div>
+    <div class="step-label">Run</div>
+  </div>
+  <div class="step-line {{ 'is-done' if steps.approved else '' }}"></div>
+  {% set is_current = not steps.approved and not ns.found_current %}
+  <div class="step {{ 'is-done' if steps.approved else ('is-current' if is_current else '') }}">
+    <div class="step-dot">{{ '✓' if steps.approved else '5' }}</div>
+    <div class="step-label">Approve</div>
+  </div>
+</div>
+
 <div class="card">
   <a class="btn btn-primary" href="{{ url_for('new_use_case', slug=project.slug) }}">+ Add an AI feature</a>
-  {% if project.repo_path %}
+  {% if project.repo_path and has_scan_results %}
+  <a class="btn" href="{{ url_for('scan_results', slug=project.slug) }}">View scan results</a>
+  <a class="btn" href="{{ url_for('scan_repo_form', slug=project.slug) }}">Scan again</a>
+  {% elif project.repo_path %}
   <a class="btn" href="{{ url_for('scan_repo_form', slug=project.slug) }}">Scan repo for AI features</a>
   {% endif %}
   <a class="btn" href="{{ url_for('project_defaults', slug=project.slug) }}">Project defaults</a>
@@ -23,6 +63,8 @@
   <ul style="margin: 8px 0 0; padding-left: 18px;">
     {% for name in defined_not_run %}
     <li><code>{{ name }}</code> —
+      <a class="link" href="{{ url_for('run_form', project=project.slug, name=name) }}">Run</a>
+      &middot; or from the CLI:
       <code>python -m modelcicd.cli run --use-case {{ project.slug }}/use_cases/{{ name }}.yaml --project {{ project.slug }}</code></li>
     {% endfor %}
   </ul>

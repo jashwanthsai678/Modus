@@ -230,6 +230,11 @@ See [Projects, the wizard, and a live endpoint](#projects-the-wizard-and-a-live-
 
 ## CLI reference
 
+`--use-case`/`--use-case-name` also accept `--feature`/`--feature-name` as
+plain aliases — same flag, same behavior, just matching the dashboard's own
+word for the same thing ("AI feature"), since bouncing between the two
+under two different names was its own small source of confusion.
+
 | Command | Cost | What it does |
 |---|---|---|
 | `init` | free | Writes a starting `use_case.yaml` template |
@@ -274,15 +279,27 @@ anywhere else, and nothing about it is required to use the CLI. Think
   candidate, run count, and a trend sparkline of the best score each past run
   found (so a slow drift or a newly competitive cheap model is visible
   without opening a single JSON file).
+- **Project page** — a step-by-step guide (Connect → Scan → Define → Run →
+  Approve) showing exactly which of those you've done and which one's next,
+  instead of a flat row of equally-weighted buttons. Any feature that's been
+  defined but never benched is called out by name with a direct "Run" link,
+  so a saved feature never quietly disappears.
+- **Run page** — pick a price tier and an optional candidate limit, see the
+  exact candidate list and call-count cost *before* anything is spent, then
+  run the bench right there — the same `runner.execute` the CLI's `run`
+  command calls, so this is a second door into one implementation, not a
+  second copy of it. Long-running actions (scanning, drafting test cases,
+  benching) show a working state instead of looking frozen — these can
+  genuinely take several minutes on free-tier models.
 - **Use case page** — the full approval history and a link to every past
   run's leaderboard. If a candidate is pending, an **Approve** button sits
   right next to it — behind a confirmation dialog, and wired to the exact
   same `state.approve()` function the CLI's `approve` command calls, so
   there's still only one thing in this project that can change what
   `resolve()` returns.
-- **Run page** — the leaderboard as a per-tier bar chart (score, price,
-  would-ship rate on hover) with the full data table underneath it, so
-  nothing is chart-only.
+- **Run detail page** — the leaderboard as a per-tier bar chart (score,
+  price, would-ship rate on hover) with the full data table underneath it,
+  so nothing is chart-only.
 
 `run` and `status` print the relevant dashboard link after they finish, so
 you don't have to know the URL scheme by heart.
@@ -381,23 +398,56 @@ python -m modelcicd.cli wizard --project support-portal --from-scan 0
 ```
 
 **This spends a small amount of money** — one model call per candidate file
-— shown and confirmed first, exactly like `run`. A scan only ever *proposes*:
-picking a candidate pre-fills the wizard's system prompt and code target,
-both still shown and editable before anything is saved, and test cases are
-always still typed in by hand — a scan can identify a prompt, not invent a
-good test case. The same flow exists in the dashboard: a "Scan repo for AI
-features" button on the project page, a results list, "Use this" into the
+(the default scan model is a free one), shown and confirmed first, exactly
+like `run`. A scan only ever *proposes*: picking a candidate pre-fills the
+wizard's system prompt and code target, both still shown and editable before
+anything is saved. The same flow exists in the dashboard: a "Scan repo for
+AI features" button on the project page, a results list, "Use this" into the
 same wizard form.
 
+**It reads more than the call site itself.** For each candidate, it also
+follows that file's own local imports (one hop, best-effort) so a prompt
+built in a separate file still gets attributed correctly, and it reports
+`inputStructure`/`outputStructure` — what the code actually sends and
+expects back, read from the real variables and parsing logic, not guessed.
+
+**Errors are never silently hidden.** A file that fails to scan (a broken
+key, a rate limit, anything) is shown distinctly from a file that was
+genuinely clean — the two used to look identical, which was a real bug this
+project shipped and fixed: a failed scan reporting "no likely call sites
+found" is the one thing worse than an error, because it looks like success.
+
 **Read the confidence, don't just read the result.** Every candidate carries
-a `confidence: high|low` — a low-confidence one is flagged distinctly
-("verify before using") rather than presented the same as a clean hit, and a
-scan that finds nothing or only low-confidence candidates points straight at
-`wizard --project <slug>` (no `--from-scan`) as the reliable fallback. This
-matters most exactly where it's weakest: code that builds a prompt
-dynamically or through an agent/tool-calling framework is real code the
-scanner is likely to miss or misread — it reads for a literal call site, not
-that kind of indirection. Don't read a quiet scan as "there's nothing here."
+a `confidence: high|low` — the scanning model's own certainty that this is
+really an LLM call, not a second, independent check. A low-confidence one is
+flagged distinctly ("verify before using") rather than presented the same as
+a clean hit, and a scan that finds nothing or only low-confidence candidates
+points straight at `wizard --project <slug>` (no `--from-scan`) as the
+reliable fallback. This matters most exactly where it's weakest: code that
+builds a prompt dynamically, or through an agent/tool-calling framework, or
+across more than one hop of imports, is real code the scanner is likely to
+miss or misread — it reads for a literal call site, not that kind of
+indirection. Don't read a quiet scan as "there's nothing here."
+
+### Project defaults, and turning every scan result into a feature at once
+
+Every feature needs a rubric, a price ceiling, and a judge — re-typing the
+same ones for a project with several AI features is exactly the kind of
+manual work this tool exists to remove. `/projects/<slug>/defaults` (or
+`project set-defaults` from the CLI) sets that once; every **new** feature
+starts from it, and it never rewrites a `use_case.yaml` already saved —
+editing the template doesn't rewrite documents already made from it.
+
+With that set, the scan results page offers "Create AI features from all N
+candidate(s)": for every candidate, it applies the project's shared
+defaults, and drafts realistic test cases (and a candidate reference answer)
+from that feature's own prompt and input/output structure using a model.
+**Nothing saves until you've reviewed it** — a screen shows every drafted
+feature's name, prompt, and test cases, all still editable, with a per-item
+"skip this one" if a draft isn't good enough to keep. This is the one place
+in the whole tool where a model's own draft becomes ground truth (the
+generated reference answer) rather than a human writing it from scratch —
+which is exactly why it's never saved without that review screen first.
 
 ### A live endpoint, for a real baseline
 

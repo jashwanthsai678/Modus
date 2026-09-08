@@ -19,7 +19,7 @@
   <p class="muted" style="margin-top: 10px;">Nothing in this repo matched — no file
     mentions a known LLM-related keyword.</p>
   {% else %}
-  <form method="post"
+  <form method="post" data-working-text="Reading {{ file_count }} file(s) with a real model — this can take a minute or two, especially on a free model…"
         onsubmit="return confirm('Scan {{ file_count }} file(s) with a real model call each?\n\nThis spends a small amount of money.');">
     <button type="submit" class="btn-approve" style="margin-top: 10px;">Scan {{ file_count }} file(s)</button>
   </form>

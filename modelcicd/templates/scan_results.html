@@ -31,7 +31,10 @@
   <a class="btn" href="{{ url_for('scan_repo_form', slug=project.slug) }}">Scan again</a>
 </div>
 {% else %}
-<p class="muted">{{ summary.high }} high confidence, {{ summary.low }} low.</p>
+<p class="muted">{{ summary.high }} high confidence, {{ summary.low }} low
+  <span class="hint">— the scanning model's own certainty that this is really an LLM call,
+  not a second check; "low" is worth verifying against the file yourself before using it</span>.
+  <a class="link" href="{{ url_for('scan_repo_form', slug=project.slug) }}">scan again</a></p>
 <div class="card">
   <a class="btn btn-primary" href="{{ url_for('bulk_create_form', slug=project.slug) }}">
     Create AI features from all {{ candidates|length }} candidate(s)</a>

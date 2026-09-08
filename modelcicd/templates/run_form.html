@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Run {{ name }} — {{ project.name }}{% endblock %}
+{% block content %}
+<p class="muted"><a class="link" href="{{ url_for('project_detail', slug=project.slug) }}">&larr; {{ project.name }}</a></p>
+<h1>Run {{ name }}</h1>
+<p class="muted">{{ uc.test_cases|length }} test case(s), judged by <code>{{ uc.judge_model }}</code>.
+  This is the only step that calls real candidate models — it shows the cost below and only
+  spends anything once you click Run.</p>
+
+{% if error %}
+<div class="card errors">{{ error }}</div>
+{% endif %}
+
+<div class="card">
+  <form method="get">
+    <label for="tier">price tier <span class="hint">(models are grouped by cost, so a cheap
+      model is only ever compared against other cheap models — never ranked against something
+      10x the price)</span></label>
+    <select id="tier" name="tier" onchange="this.form.submit()">
+      {% for t in tiers %}
+      <option value="{{ t }}" {{ 'selected' if t == tier else '' }}>{{ t }}</option>
+      {% endfor %}
+    </select>
+    <label for="limit">limit candidates <span class="hint">(optional — leave blank for all that pass)</span></label>
+    <input id="limit" name="limit" type="number" min="1" value="{{ limit or '' }}"
+           placeholder="e.g. 10" onchange="this.form.submit()">
+    <noscript><button type="submit" class="btn" style="margin-top: 8px;">Update</button></noscript>
+  </form>
+</div>
+
+<div class="card">
+  <p><strong>candidates: {{ candidates|length }}</strong></p>
+  {% if candidates %}
+  <p class="muted">cost: {{ (candidates|length) * (uc.test_cases|length) }} generation call(s) +
+    {{ (candidates|length) * (uc.test_cases|length) }} judge call(s)</p>
+  <ul>
+    {% for c in candidates[:15] %}
+    <li><code>{{ c }}</code></li>
+    {% endfor %}
+    {% if candidates|length > 15 %}<li class="muted">… and {{ candidates|length - 15 }} more</li>{% endif %}
+  </ul>
+  <form method="post"
+        data-working-text="Running {{ candidates|length }} candidate(s) through {{ uc.test_cases|length }} test case(s) each — this can take several minutes, especially on free-tier models…"
+        onsubmit="return confirm('Run {{ candidates|length }} candidate(s)?{% if tier != 'free' %}\n\nThis tier is NOT free — it will spend real money on your OpenRouter balance.{% endif %}');">
+    <input type="hidden" name="tier" value="{{ tier }}">
+    {% if limit %}<input type="hidden" name="limit" value="{{ limit }}">{% endif %}
+    <button type="submit" class="btn btn-primary">Run {{ candidates|length }} candidate(s)</button>
+  </form>
+  {% else %}
+  <p class="muted">No candidates in this tier pass the feature's guardrails (price/context/JSON
+    mode). Try a different tier above, or widen the guardrails in
+    <a class="link" href="{{ url_for('project_defaults', slug=project.slug) }}">Project defaults</a>.</p>
+  {% endif %}
+</div>
+
+<p class="muted">or from the CLI:
+  <code>python -m modelcicd.cli run --use-case {{ project.slug }}/use_cases/{{ name }}.yaml --project {{ project.slug }}{% if tier %} --tier {{ tier }}{% endif %}{% if limit %} --limit {{ limit }}{% endif %}</code></p>
+{% endblock %}

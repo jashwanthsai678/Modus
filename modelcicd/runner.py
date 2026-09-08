@@ -30,7 +30,16 @@ def select_candidates(uc: UseCase, cat: dict, *, providers: Optional[list] = Non
 
     `providers` narrows the field to a project's chosen marketplace(s) (e.g.
     a project connected with `--providers groq`) — `None` searches everything
-    the catalogue has, same as an unscoped use case always has."""
+    the catalogue has, same as an unscoped use case always has.
+
+    THE JUDGE IS EXCLUDED HERE, NOT JUST REFUSED LATER. A guardrails-derived
+    field naturally CAN contain the judge model (this got more likely once
+    the default judge became a free model, sitting in the same free tier
+    candidates are drawn from) — dropping it here, before `limit` is applied,
+    means benching still runs instead of refusing outright over something
+    this function can just avoid by construction. An EXPLICIT `--models`
+    list is left alone: naming the judge on purpose is still refused loudly
+    by `judge.check_judge_not_candidate`, not silently corrected."""
     if models:
         return [m.strip() for m in models.split(",") if m.strip()]
     result = guardrails_module.apply(cat, uc.guardrails)
@@ -39,6 +48,8 @@ def select_candidates(uc: UseCase, cat: dict, *, providers: Optional[list] = Non
     if providers:
         wanted = set(providers)
         passed = [m for m in passed if set(m.get("providers") or []) & wanted]
+    judge_key = catalogue_module.key(uc.judge_model)
+    passed = [m for m in passed if m.get("key") != judge_key]
     if limit:
         passed = passed[:limit]
     return [cid for m in passed if (cid := catalogue_module.cheapest_host_id(m))]

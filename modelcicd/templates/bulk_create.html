@@ -17,7 +17,7 @@
     <li>{{ c.file }} {% if c.model %}&mdash; <code>{{ c.model }}</code>{% endif %}</li>
     {% endfor %}
   </ul>
-  <form method="post">
+  <form method="post" data-working-text="Drafting test cases for {{ candidates|length }} feature(s) — one model call each, this can take a few minutes on a free model…">
     <button type="submit" class="btn btn-primary">Draft {{ candidates|length }} feature(s)</button>
   </form>
 </div>

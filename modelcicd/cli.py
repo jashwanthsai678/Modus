@@ -152,6 +152,56 @@ def cmd_project_create(args) -> int:
     return 0
 
 
+def cmd_project_set_defaults(args) -> int:
+    """The shared rubric/price/judge every NEW feature in this project starts
+    from — same `project.set_defaults` the dashboard's Project Defaults page
+    calls, so the two can never disagree about what a project's template is.
+    Only overrides the fields actually passed; everything else keeps its
+    current value."""
+    try:
+        proj = project_module.load(args.project)
+    except FileNotFoundError as exc:
+        print(str(exc))
+        return 2
+    current = dict(proj.defaults)
+    if args.max_price_in is not None:
+        current["maxPriceIn"] = args.max_price_in
+    if args.max_price_out is not None:
+        current["maxPriceOut"] = args.max_price_out
+    if args.min_context is not None:
+        current["minContext"] = args.min_context
+    if args.tiers is not None:
+        current["tiers"] = [t.strip() for t in args.tiers.split(",") if t.strip()]
+    if args.judge_model is not None:
+        current["judgeModel"] = args.judge_model
+    if args.max_tokens is not None:
+        current["maxTokens"] = args.max_tokens
+    if args.min_improvement is not None:
+        current["minImprovement"] = args.min_improvement
+    if args.rubric is not None:
+        rubric = []
+        for item in args.rubric.split(";"):
+            parts = [p.strip() for p in item.split(":")]
+            if len(parts) < 2 or not parts[0] or not parts[1]:
+                continue
+            weight = float(parts[2]) if len(parts) > 2 and parts[2] else 1.0
+            rubric.append({"id": parts[0], "description": parts[1], "weight": weight})
+        current["rubric"] = rubric
+
+    updated = project_module.set_defaults(args.project, current)
+    d = updated.defaults
+    print(f"defaults for {args.project!r}:")
+    print(f"  rubric           {len(d.get('rubric') or [])} criterion(criteria) — "
+         f"{', '.join(c['id'] for c in d.get('rubric') or []) or '(none set)'}")
+    print(f"  price ceiling    in <= ${d['maxPriceIn']:.2f}/M, out <= ${d['maxPriceOut']:.2f}/M")
+    print(f"  min context      {d['minContext']:,}")
+    print(f"  tiers            {', '.join(d['tiers'])}")
+    print(f"  judge model      {d.get('judgeModel') or '(uses the global default)'}")
+    print(f"  min improvement  {d['minImprovement']}")
+    print(f"\nApplies to features created after this point — nothing already saved changes.")
+    return 0
+
+
 def cmd_project_list(args) -> int:
     projects = project_module.list_all()
     if not projects:
@@ -606,6 +656,22 @@ def build_parser() -> argparse.ArgumentParser:
                          "candidates, e.g. openrouter,groq (default: openrouter)")
     proj_sub.add_parser("list", help="list connected projects")
 
+    pd = proj_sub.add_parser("set-defaults",
+                             help="set the shared rubric/price/judge every NEW AI feature "
+                                  "in this project starts from — only overrides what you pass")
+    pd.add_argument("--project", required=True)
+    pd.add_argument("--max-price-in", type=float, default=None)
+    pd.add_argument("--max-price-out", type=float, default=None)
+    pd.add_argument("--min-context", type=int, default=None)
+    pd.add_argument("--tiers", default=None, help="comma-separated, e.g. free,paid-low")
+    pd.add_argument("--judge-model", default=None)
+    pd.add_argument("--max-tokens", type=int, default=None)
+    pd.add_argument("--min-improvement", type=float, default=None)
+    pd.add_argument("--rubric", default=None,
+                    help="semicolon-separated criteria, each 'id:description[:weight]', "
+                         "e.g. 'clarity:Is it clear?:1.0;tone:Is the tone right?:0.5' "
+                         "— replaces the whole rubric, not additive")
+
     w = sub.add_parser("wizard", help="interactively define a new AI feature — no YAML to hand-write")
     w.add_argument("--project", default=None, help="write into this project's use_cases/ (omit for unscoped)")
     w.add_argument("--from-scan", type=int, default=None,
@@ -621,7 +687,9 @@ def build_parser() -> argparse.ArgumentParser:
     sr.add_argument("--yes", action="store_true", help="skip the cost confirmation")
 
     def uc_arg(sp):
-        sp.add_argument("--use-case", required=True, help="path to a use_case.yaml")
+        sp.add_argument("--use-case", "--feature", dest="use_case", required=True,
+                        help="path to a use_case.yaml — same thing the dashboard calls "
+                             "an 'AI feature'; --feature is accepted as an alias")
         sp.add_argument("--refresh", action="store_true")
         return sp
 
@@ -643,26 +711,26 @@ def build_parser() -> argparse.ArgumentParser:
                   help="scope state/out and candidate providers to this connected project")
 
     s = sub.add_parser("status", help="what is approved and what is pending")
-    s.add_argument("--use-case", default=None)
-    s.add_argument("--use-case-name", default=None)
+    s.add_argument("--use-case", "--feature", dest="use_case", default=None)
+    s.add_argument("--use-case-name", "--feature-name", dest="use_case_name", default=None)
     s.add_argument("--project", default=None)
 
     a = sub.add_parser("approve", help="promote a model — this changes resolve()")
-    a.add_argument("--use-case", default=None)
-    a.add_argument("--use-case-name", default=None)
+    a.add_argument("--use-case", "--feature", dest="use_case", default=None)
+    a.add_argument("--use-case-name", "--feature-name", dest="use_case_name", default=None)
     a.add_argument("--model", default=None, help="defaults to whatever is pending")
     a.add_argument("--project", default=None)
 
     rj = sub.add_parser("reject", help="dismiss the pending candidate — never changes resolve()")
-    rj.add_argument("--use-case", default=None)
-    rj.add_argument("--use-case-name", default=None)
+    rj.add_argument("--use-case", "--feature", dest="use_case", default=None)
+    rj.add_argument("--use-case-name", "--feature-name", dest="use_case_name", default=None)
     rj.add_argument("--project", default=None)
 
     sub.add_parser("pending", help="everything waiting for review, across every project")
 
     cp = sub.add_parser("apply-code-patch",
                         help="write an approved model into its codeTarget file — previewed, confirmed")
-    cp.add_argument("--use-case-name", required=True)
+    cp.add_argument("--use-case-name", "--feature-name", dest="use_case_name", required=True)
     cp.add_argument("--project", required=True, help="code targets only exist within a connected project")
     cp.add_argument("--yes", action="store_true", help="skip the confirmation")
 
@@ -681,7 +749,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     if args.command == "project":
-        return {"create": cmd_project_create, "list": cmd_project_list}[args.project_command](args)
+        return {"create": cmd_project_create, "list": cmd_project_list,
+                "set-defaults": cmd_project_set_defaults}[args.project_command](args)
     if args.command == "scheduler":
         return {"run-due": cmd_scheduler_run_due, "serve": cmd_scheduler_serve}[args.scheduler_command](args)
     return {"init": cmd_init, "onboarding": cmd_onboarding, "set-key": cmd_set_key,

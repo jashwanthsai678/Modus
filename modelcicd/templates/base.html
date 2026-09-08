@@ -250,6 +250,33 @@
     .errors { border-color: var(--error-border); background: var(--error-bg); color: var(--error-fg); }
     .errors ul { margin: 6px 0 0; padding-left: 18px; }
 
+    /* The "what do I do next" stepper on a project page — a done step is
+       filled and checked, the current one is outlined, everything after it
+       is muted, so the right next click is never a guess among a row of
+       otherwise-equal buttons. */
+    .stepper { display: flex; align-items: center; margin: 4px 0 18px; overflow-x: auto; }
+    .step { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .step-dot { width: 22px; height: 22px; border-radius: 50%; display: flex;
+               align-items: center; justify-content: center; font-size: 12px;
+               font-weight: 700; flex-shrink: 0; background: var(--surface-2);
+               border: 2px solid var(--border); color: var(--muted); }
+    .step.is-done .step-dot { background: var(--green); border-color: var(--green); color: #fff; }
+    .step.is-current .step-dot { border-color: var(--accent-bright); color: var(--accent-bright); }
+    .step-label { font-size: 13px; color: var(--muted); white-space: nowrap; }
+    .step.is-done .step-label, .step.is-current .step-label { color: var(--fg); font-weight: 600; }
+    .step-line { width: 28px; height: 2px; background: var(--border); flex-shrink: 0; margin: 0 6px; }
+    .step-line.is-done { background: var(--green); }
+
+    /* Working state for any form that calls a model — these can take minutes,
+       not seconds, and with nothing shown the page looks identical to broken.
+       Applied by the tiny script at the bottom of this file to any
+       `form[data-working-text]` on submit. */
+    .btn[disabled] { cursor: default; filter: none; opacity: .85; }
+    .btn .spinner { display: inline-block; width: 12px; height: 12px; margin-right: 7px;
+                   border: 2px solid currentColor; border-right-color: transparent;
+                   border-radius: 50%; vertical-align: -2px; animation: spin .7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
     /* Accessibility: every interactive element gets a visible focus ring —
        missing before, and easy to lose track of on a dark or light surface
        alike since the browser default outline is barely visible on both. */
@@ -258,7 +285,7 @@
       outline: 2px solid var(--accent-bright); outline-offset: 2px;
     }
     @media (prefers-reduced-motion: reduce) {
-      *, *::before, *::after { transition: none !important; }
+      *, *::before, *::after { transition: none !important; animation: none !important; }
     }
   </style>
 </head>
@@ -294,6 +321,24 @@
         apply(current() === "light" ? "dark" : "light");
       });
     })();
+
+    // Any form calling a model can take minutes, not seconds — with nothing
+    // shown, a slow request and a stuck page look identical. Opt in with
+    // data-working-text="..." on the <form>; shows a spinner and disables
+    // the submit button so a double-click can't fire the same spend twice.
+    document.querySelectorAll("form[data-working-text]").forEach(function (form) {
+      form.addEventListener("submit", function (event) {
+        // A form with its own onsubmit="return confirm(...)" may cancel the
+        // submit (user clicked Cancel) — that runs first (attached earlier,
+        // during HTML parsing) and sets this, so skip showing "working" for
+        // a submission that never actually happened.
+        if (event.defaultPrevented) return;
+        var btn = form.querySelector('button[type="submit"]');
+        if (!btn || btn.disabled) return;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span>' + form.dataset.workingText;
+      });
+    });
   </script>
 </body>
 </html>

@@ -234,8 +234,17 @@ def create_app() -> Flask:
         for p in project_module.list_use_cases(slug):
             if p.stem not in known:
                 defined_not_run.append(p.stem)
+        has_scan_results = _scan_results_path(slug).exists()
+        steps = {
+            "connected": True,
+            "scanned": has_scan_results or not proj.repo_path,
+            "defined": bool(cases or defined_not_run),
+            "benched": bool(cases),
+            "approved": any(c.get("approvedModel") for c in cases),
+        }
         return render_template("project.html", project=proj, cases=cases,
-                              defined_not_run=sorted(defined_not_run))
+                              defined_not_run=sorted(defined_not_run),
+                              has_scan_results=has_scan_results, steps=steps)
 
     # ── Project defaults — the shared template every NEW feature starts from ─
 
@@ -514,7 +523,8 @@ def create_app() -> Flask:
                               code_target=code_target,
                               approved_flash=request.args.get("approved"),
                               dismissed_flash=request.args.get("dismissed"),
-                              error_flash=request.args.get("error"))
+                              error_flash=request.args.get("error"),
+                              ran_flash=request.args.get("ran"))
 
     app.add_url_rule("/usecase/<path:name>", "usecase", usecase)
     app.add_url_rule("/projects/<project>/usecase/<path:name>", "usecase", usecase)
@@ -634,6 +644,73 @@ def create_app() -> Flask:
         code_patch_module.update_tracked_model(uc_path, new_model)
         return redirect(scoped_url("usecase", project=project, name=name,
                                    approved=f"code patched: {code_target.file}"), code=303)
+
+    # ── Run a bench — the one action that spends real money, previewed ──────
+    #
+    # SAME COST-PREVIEW-AND-CONFIRM PATTERN AS SCAN AND BULK-CREATE. GET shows
+    # how many candidates the CURRENT tier/limit selection resolves to (free —
+    # only reads the cached catalogue) and the resulting cost; only the POST
+    # on that page spends anything. Calls the exact same `runner.execute` the
+    # CLI's `run` command calls — one implementation, this is just a second
+    # door into it. Project-scoped only: an unscoped use case has no
+    # remembered path back to its own use_case.yaml to re-run.
+
+    def _catalogue_path() -> Path:
+        return OUT_DIR / "catalogue.json"
+
+    def _run_candidates(uc, proj, *, tier, limit):
+        from . import catalogue as catalogue_module
+        from . import runner as runner_module
+        cat = catalogue_module.load_or_poll(_catalogue_path(), refresh=False)
+        candidates = runner_module.select_candidates(
+            uc, cat, providers=proj.providers, tier=tier or None, limit=limit)
+        return cat, candidates
+
+    @app.route("/projects/<project>/usecase/<path:name>/run")
+    def run_form(project, name):
+        from . import config as config_module
+        proj = project_module.load(project)
+        uc_path = project_module.find_use_case(project, name)
+        if not uc_path:
+            abort(404, f"no use_case.yaml found for {name!r} in project {project!r}.")
+        uc = config_module.load(uc_path)
+        tier = request.args.get("tier") or "free"
+        limit = request.args.get("limit", type=int)
+        _, candidates = _run_candidates(uc, proj, tier=tier, limit=limit)
+        return render_template("run_form.html", project=proj, name=name, uc=uc,
+                              candidates=candidates, tier=tier, limit=limit,
+                              tiers=uc.guardrails.tiers, error=request.args.get("error"))
+
+    @app.route("/projects/<project>/usecase/<path:name>/run", methods=["POST"])
+    def run_execute(project, name):
+        import asyncio
+        from . import config as config_module
+        from . import runner as runner_module
+        proj = project_module.load(project)
+        uc_path = project_module.find_use_case(project, name)
+        if not uc_path:
+            abort(404, f"no use_case.yaml found for {name!r} in project {project!r}.")
+        uc = config_module.load(uc_path)
+        tier = request.form.get("tier") or "free"
+        limit = request.form.get("limit", type=int)
+        cat, candidates = _run_candidates(uc, proj, tier=tier, limit=limit)
+        if not candidates:
+            return redirect(scoped_url("usecase", project=project, name=name,
+                                       error="no candidates survived the guardrails "
+                                             "for that tier/limit — nothing to run"),
+                            code=303)
+        try:
+            result = asyncio.run(runner_module.execute(
+                uc, cat, candidates, state_root=project_module.state_dir(project),
+                out_dir=project_module.out_dir(project)))
+        except Exception as exc:                        # noqa: BLE001
+            return redirect(url_for("run_form", project=project, name=name,
+                                    tier=tier, limit=limit, error=str(exc)), code=303)
+        pending = (result.get("state") or {}).get("pending")
+        flash = f"benched {len(candidates)} candidate(s)"
+        if pending:
+            flash += f" — {pending['model']} is now pending review"
+        return redirect(scoped_url("usecase", project=project, name=name, ran=flash), code=303)
 
     return app
 

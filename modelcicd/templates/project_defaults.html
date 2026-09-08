@@ -66,7 +66,8 @@
       <input id="allow_free" name="allow_free" type="checkbox" {{ 'checked' if fields.allow_free else '' }}>
       <label for="allow_free" style="margin:0;">include free-tier models</label>
     </div>
-    <label>price tiers to bench</label>
+    <label>price tiers to bench <span class="hint">(a candidate only ever competes within its
+      own tier, so cheap and expensive models never get ranked against each other)</span></label>
     {% for t in ['free', 'paid-low', 'paid-mid', 'paid-high'] %}
     <div class="checkline">
       <input id="tier-{{ t }}" name="tiers" type="checkbox" value="{{ t }}"

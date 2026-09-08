@@ -1062,6 +1062,34 @@ def test_select_candidates_filters_by_provider() -> None:
     check("only the groq model survives", ids == ["vendor/b"], f"{ids}")
 
 
+def test_select_candidates_excludes_the_configured_judge() -> None:
+    """A real failure this caught live: once the default judge became a
+    free model, it naturally also passed guardrails as a free-tier
+    candidate — this must be dropped automatically, not force the whole
+    run to refuse."""
+    cat = {"models": {}}
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+    judge_key = catalogue.key(uc.judge_model)
+    passed_models = [
+        {"key": judge_key, "hosts": [{"id": uc.judge_model, "price_out": 0.0}],
+         "providers": ["openrouter"]},
+        {"key": "candidate-a", "hosts": [{"id": "vendor/a", "price_out": 0.1}],
+         "providers": ["openrouter"]},
+    ]
+    import types
+    fake_guardrails = types.SimpleNamespace(
+        apply=lambda cat, g: {"passed": passed_models, "failed": []},
+        within_tiers=lambda models, tiers: models)
+    original = runner.guardrails_module
+    runner.guardrails_module = fake_guardrails
+    try:
+        ids = runner.select_candidates(uc, cat)
+    finally:
+        runner.guardrails_module = original
+    check("judge excluded from its own candidate pool",
+         uc.judge_model not in ids and ids == ["vendor/a"], f"{ids}")
+
+
 def test_wizard_code_target_needs_current_model() -> None:
     errors = wizard.validate(_wizard_fields(code_file="app.py", code_current_model=None))
     check("current model required", any("code" in e for e in errors), f"{errors}")
