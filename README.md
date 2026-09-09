@@ -1,4 +1,4 @@
-<h1 align="center">Model CICD</h1>
+<h1 align="center">(Modus)Model CICD</h1>
 
 <p align="center">
   <strong>Continuous model discovery, sandboxed benchmarking, and human-approved
