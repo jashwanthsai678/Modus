@@ -17,6 +17,11 @@ as it did, reading the repo-root `state/`/`out/` directories. Each gains a
 `/projects/<slug>/...` sibling, registered against the SAME view function, so
 there is still exactly one implementation of "render a use case" or "approve
 a candidate" — just two URLs that can reach it.
+
+`/api/resolve/<name>` AND `/api/status/<name>` ARE THE ONE DOOR TO OTHER
+LANGUAGES. `resolver.resolve()` is Python-only; these expose exactly that
+answer over HTTP, GET-only, read-only — see the section above `_roots` for
+why that boundary is load-bearing, not incidental.
 """
 import json
 from pathlib import Path
@@ -29,6 +34,7 @@ from . import config as config_module
 from . import health as health_module
 from . import onboarding as onboarding_module
 from . import project as project_module
+from . import resolver as resolver_module
 from . import secrets as secrets_module
 from . import state as state_module
 from . import wizard as wizard_module
@@ -763,6 +769,70 @@ def create_app() -> Flask:
         if project:
             return project_module.state_dir(project), project_module.out_dir(project)
         return STATE_DIR, OUT_DIR
+
+    # ── Read-only JSON API — the one door this project opens to OTHER
+    #    languages ────────────────────────────────────────────────────────
+    #
+    # THE ENTIRE INTEGRATION SURFACE, OVER HTTP INSTEAD OF AN IMPORT.
+    # `resolver.resolve()` is deliberately the only thing an application
+    # needs to call from Python — this exposes exactly that, and nothing
+    # else, so a non-Python app doesn't need its own port of the state-file
+    # format to get the same one answer. Nothing here writes anything:
+    # approving, rejecting, and spending money on a run all still require a
+    # human at the CLI or the dashboard, which is the two-gate design this
+    # whole project is built around. Widening this to accept a POST would be
+    # widening WHO can approve or spend, and that is a different, much
+    # bigger decision than "let another language read what's approved" —
+    # these routes are GET-only and there is no plan to make them anything
+    # else.
+    #
+    # SAFE BY CONSTRUCTION, NOT BY A PERMISSIONS CHECK. This project has no
+    # auth story at all — self-hosted, single-tenant, local-only by default
+    # — so "safe" here means "read-only", never "authenticated". If this
+    # dashboard is ever exposed beyond localhost, that is an operator's
+    # decision to put a reverse proxy in front of it, the same as any other
+    # local dev server; this file doesn't pretend to solve that.
+
+    def _api_error(message: str, *, status: int, **extra):
+        # A CLEAR JSON BODY, NOT AN HTML ABORT PAGE. `abort()` renders
+        # Flask's default HTML error page, which is fine for a person in a
+        # browser and useless for a caller parsing a response over HTTP.
+        return {"error": message, **extra}, status
+
+    def api_resolve(name, project=None):
+        if project and not project_module.exists(project):
+            return _api_error(f"no project at {project!r}", status=404, project=project)
+        state_root, _ = _roots(project)
+        fallback = request.args.get("fallback") or None
+        try:
+            model = resolver_module.resolve(name, fallback=fallback, root=state_root)
+        except LookupError as exc:
+            # THE SAME FAILURE MODE `resolver.resolve()` HAS ALWAYS HAD, put
+            # into a status code instead of a raised exception — a caller
+            # integrating over HTTP needs something to branch on, not a
+            # traceback. Still fails loudly: 404, not a 200 with a null
+            # model that a careless caller might use anyway.
+            return _api_error(str(exc), status=404, useCase=name, project=project)
+        state = state_module.load(name, state_root)
+        return {"model": model, "useCase": name, "project": project,
+                # WHICH ANSWER THIS WAS, so a caller can tell "a human
+                # approved this" from "nothing is approved and you're
+                # seeing your own fallback echoed back" without having to
+                # separately call /api/status.
+                "source": "approved" if state.get("approvedModel") else "fallback"}
+
+    app.add_url_rule("/api/resolve/<path:name>", "api_resolve", api_resolve)
+    app.add_url_rule("/projects/<project>/api/resolve/<path:name>", "api_resolve", api_resolve)
+
+    def api_status(name, project=None):
+        if project and not project_module.exists(project):
+            return _api_error(f"no project at {project!r}", status=404, project=project)
+        state_root, _ = _roots(project)
+        result = resolver_module.status(name, root=state_root)
+        return {**result, "project": project}
+
+    app.add_url_rule("/api/status/<path:name>", "api_status", api_status)
+    app.add_url_rule("/projects/<project>/api/status/<path:name>", "api_status", api_status)
 
     def _code_target_info(project, name):
         """The use case's codeTarget, if this is project-scoped and it has

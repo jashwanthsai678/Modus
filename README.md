@@ -251,6 +251,44 @@ you don't have to know the URL scheme by heart.
 
 ---
 
+## HTTP API — for an application that isn't Python
+
+`from modelcicd.resolver import resolve` is the entire integration surface,
+but it's an import, so it only works from Python. The dashboard (`cli ui`)
+also serves that same answer over plain HTTP, so any language that can make a
+GET request gets it without a native port of the state-file format:
+
+```bash
+curl http://127.0.0.1:5000/api/resolve/support_bot_reply?fallback=gpt-4o-mini
+# {"model": "vendor/x", "useCase": "support_bot_reply", "project": null, "source": "approved"}
+
+curl http://127.0.0.1:5000/projects/my-app/api/resolve/support_bot_reply
+curl http://127.0.0.1:5000/api/status/support_bot_reply
+curl http://127.0.0.1:5000/projects/my-app/api/status/support_bot_reply
+```
+
+`source` tells you which answer you got — `"approved"` means a human signed
+off on it, `"fallback"` means nothing has been approved yet and you're seeing
+your own `?fallback=` echoed back. With no fallback and nothing approved,
+`/api/resolve` answers `404` with a JSON body naming the use case and how to
+fix it — the same failure `resolve()` has always raised, in a status code
+instead of a traceback, so a caller can branch on it. `/api/status` mirrors
+`resolver.status()`: approved model, when, and whatever's pending.
+
+**Read-only, and that's not a permissions setting — it's the whole design.**
+These two routes are `GET` only; a `POST` is refused with `405`. Nothing
+behind this API can approve a candidate, reject one, or spend money running a
+bench — those still require a human at the CLI or the dashboard's own POST
+routes, unchanged. Widening this to accept writes would be widening *who* can
+approve, which is a different and much bigger decision than "let another
+language read what's already been approved." And this project has no auth
+story at all — self-hosted, single-tenant, local-only by default — so if you
+ever expose the dashboard beyond `127.0.0.1`, that's an operator decision
+made with a reverse proxy in front of it, the same as any other local dev
+server; nothing here tries to solve that for you.
+
+---
+
 ## CLI reference
 
 `--use-case`/`--use-case-name` also accept `--feature`/`--feature-name` as

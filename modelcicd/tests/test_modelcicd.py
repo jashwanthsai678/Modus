@@ -2922,6 +2922,153 @@ def test_cache_clear_stale_keeps_what_a_run_would_still_reuse() -> None:
     check("clear-all removes the rest", cache.clear(tmp) == 1)
 
 
+# ── dashboard: the read-only JSON API — the one door to other languages ─────
+#
+# WHAT THIS EXISTS FOR. `resolve()` is the entire integration surface, but
+# it's Python-only — an app in another language has no way to reach it
+# without its own port of the state-file format. These two routes expose
+# exactly `resolve()` and `status()` over HTTP and nothing else: no route
+# here writes anything, matching the two-gate design (approve/reject/run) the
+# rest of this project is built around.
+
+def _api_client(*, with_project: bool = False):
+    """A test client, optionally with one project registered — covers both
+    the unscoped and project-scoped route pairs."""
+    from modelcicd import dashboard
+    tmp = Path(tempfile.mkdtemp())
+    original_state, original_out = dashboard.STATE_DIR, dashboard.OUT_DIR
+    dashboard.STATE_DIR, dashboard.OUT_DIR = tmp / "state", tmp / "out"
+    original_project_dir = project.DEFAULT_DIR
+    if with_project:
+        project.DEFAULT_DIR = tmp / "projects"
+        project.create("Api Test", slug="api-test", notify_email="t@example.com")
+    app = dashboard.create_app()
+    app.config["TESTING"] = True
+
+    def restore():
+        dashboard.STATE_DIR, dashboard.OUT_DIR = original_state, original_out
+        project.DEFAULT_DIR = original_project_dir
+
+    return app.test_client(), tmp, restore
+
+
+def test_api_resolve_returns_the_approved_model() -> None:
+    client_, tmp, restore = _api_client()
+    try:
+        state_root = tmp / "state"
+        state.record_run("router", {"ranAt": "t", "tiers": {
+            "free": [{"model": "vendor/winner", "score": 4.5}]}}, root=state_root)
+        state.approve("router", "vendor/winner", root=state_root)
+        r = client_.get("/api/resolve/router")
+        check("200 on an approved use case", r.status_code == 200, f"{r.status_code}")
+        body = r.get_json()
+        check("returns the approved model", body["model"] == "vendor/winner", f"{body}")
+        check("names the source as approved", body["source"] == "approved", f"{body}")
+        check("unscoped project is null", body["project"] is None, f"{body}")
+    finally:
+        restore()
+
+
+def test_api_resolve_uses_the_fallback_and_says_so() -> None:
+    client_, tmp, restore = _api_client()
+    try:
+        r = client_.get("/api/resolve/never_run?fallback=gpt-4o-mini")
+        check("200 via fallback", r.status_code == 200, f"{r.status_code}")
+        body = r.get_json()
+        check("returns the fallback", body["model"] == "gpt-4o-mini", f"{body}")
+        check("names the source as fallback, not approved",
+              body["source"] == "fallback", f"{body}")
+    finally:
+        restore()
+
+
+def test_api_resolve_404s_with_json_not_an_html_page_when_nothing_is_approved() -> None:
+    """Same failure `resolver.resolve()` has always had, in a status code a
+    caller can branch on instead of a traceback — and still a clear failure,
+    not a 200 with a null model someone might use anyway."""
+    client_, tmp, restore = _api_client()
+    try:
+        r = client_.get("/api/resolve/never_run")
+        check("404, not 200 with nothing", r.status_code == 404, f"{r.status_code}")
+        body = r.get_json()
+        check("a JSON body, not an HTML error page",
+              r.content_type.startswith("application/json"), r.content_type)
+        check("names the use case", body.get("useCase") == "never_run", f"{body}")
+        check("explains how to fix it",
+              "run" in body.get("error", "").lower(), body.get("error"))
+    finally:
+        restore()
+
+
+def test_api_resolve_is_scoped_to_its_project() -> None:
+    """A project-scoped call must read that project's own state directory,
+    not the unscoped one — the same isolation `_roots` already gives every
+    other route."""
+    client_, tmp, restore = _api_client(with_project=True)
+    try:
+        proj_state = project.state_dir("api-test")
+        state.record_run("router", {"ranAt": "t", "tiers": {
+            "free": [{"model": "vendor/scoped", "score": 4.0}]}}, root=proj_state)
+        state.approve("router", "vendor/scoped", root=proj_state)
+
+        scoped = client_.get("/projects/api-test/api/resolve/router")
+        check("scoped call finds the project's own approval",
+              scoped.get_json()["model"] == "vendor/scoped", f"{scoped.get_json()}")
+        check("the response names its project", scoped.get_json()["project"] == "api-test")
+
+        unscoped = client_.get("/api/resolve/router")
+        check("the unscoped route does NOT see the project's state",
+              unscoped.status_code == 404, f"{unscoped.status_code}")
+    finally:
+        restore()
+
+
+def test_api_resolve_404s_on_an_unknown_project_before_touching_resolve() -> None:
+    client_, tmp, restore = _api_client()
+    try:
+        r = client_.get("/projects/does-not-exist/api/resolve/router")
+        check("unknown project is refused", r.status_code == 404, f"{r.status_code}")
+        check("names the project", "does-not-exist" in r.get_json().get("error", ""),
+              r.get_json())
+    finally:
+        restore()
+
+
+def test_api_status_reports_pending_without_approving_anything() -> None:
+    """A read-only mirror of `resolver.status()` — proves the route touches
+    no state, unlike approve/reject which are POST-only elsewhere."""
+    client_, tmp, restore = _api_client()
+    try:
+        state_root = tmp / "state"
+        state.record_run("router", {"ranAt": "t", "tiers": {
+            "free": [{"model": "vendor/pending", "score": 4.5}]}}, root=state_root)
+        r = client_.get("/api/status/router")
+        check("200", r.status_code == 200, f"{r.status_code}")
+        body = r.get_json()
+        check("reports the pending candidate", body["pending"]["model"] == "vendor/pending",
+              f"{body}")
+        check("reports nothing approved yet", body["approvedModel"] is None, f"{body}")
+        after = state.load("router", state_root)
+        check("calling status did not approve anything",
+              after.get("approvedModel") is None, f"{after}")
+    finally:
+        restore()
+
+
+def test_api_routes_only_answer_get() -> None:
+    """THE ONE RULE THAT MUST NEVER MOVE. Nothing behind this API can write —
+    approving, rejecting, and spending money on a run all still require a
+    human at the CLI or the dashboard's own POST routes. A POST here must be
+    refused outright, not silently accepted."""
+    client_, tmp, restore = _api_client()
+    try:
+        for path in ("/api/resolve/router", "/api/status/router"):
+            r = client_.post(path)
+            check(f"POST {path} is refused", r.status_code == 405, f"{r.status_code}")
+    finally:
+        restore()
+
+
 # ── dashboard: bulk-create never saves silently, never saves partially ──────
 #
 # THE REGRESSION THESE GUARD. bulk_create_save used to `continue` past any
