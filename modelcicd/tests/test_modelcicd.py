@@ -1258,6 +1258,332 @@ def test_dig_reads_a_nested_field() -> None:
         check("missing field raises", True)
 
 
+# ── editing a saved feature: a round trip must not quietly lose anything ────
+#
+# THE RISK AN EDIT FORM INTRODUCES. Creating a feature writes a file from
+# scratch, so anything the form doesn't ask about simply isn't there. EDITING
+# reads a file into the same fields and writes it back — so anything the form
+# doesn't ask about gets deleted, by someone who came to change a price
+# ceiling. Every check below exists for one of those fields.
+
+def _full_use_case_yaml() -> str:
+    """Every optional block `to_yaml` can emit, including the two nobody's
+    form exposes: a per-test-case rubric and per-test-case assertions."""
+    import textwrap
+    return textwrap.dedent("""
+        useCase: router
+        description: routes tickets
+        systemPrompt: |
+          Decide which team handles this.
+          Answer with one word.
+        testCases:
+          - id: plain
+            input: my card was charged twice
+            reference: billing
+          - id: has_overrides
+            input: the upload crashes
+            reference: technical
+            rubric:
+              - id: strictness
+                description: must be exactly one word
+                weight: 3.0
+            assertions:
+              - type: equals
+                value: technical
+                path: team
+        rubric:
+          - id: clarity
+            description: is it clear
+            weight: 1.0
+          - id: brevity
+            description: is it short
+            weight: 2.0
+        assertions:
+          - type: has-keys
+            value: [team]
+            required: true
+          - type: not-contains
+            value: as an AI
+            weight: 2.0
+            caseSensitive: true
+        guardrails:
+          maxPriceIn: 0.25
+          maxPriceOut: 1.5
+          minContext: 64000
+          requireJson: true
+          allowFree: false
+          tiers: [paid-low, paid-mid]
+        judgeModel: pinned/judge
+        maxTokens: 900
+        notify:
+          email: someone@example.com
+          minImprovement: 0.35
+        endpoint:
+          url: http://localhost:8000/route
+          method: POST
+          inputField: ticket
+          responseField: team
+          headers:
+            Authorization: 'Bearer ${TOK}'
+          timeoutSeconds: 12.0
+        schedule:
+          intervalDays: 14
+        codeTarget:
+          file: app/router.py
+          currentModel: vendor/old
+        usage:
+          callsPerDay: 5000
+        inputStructure: '{ticket: str}'
+        outputStructure: '{team: str}'
+    """).lstrip()
+
+
+def test_a_saved_feature_round_trips_through_the_edit_form_unchanged() -> None:
+    """Read a file into fields, write it back, and every field must survive
+    — otherwise editing one thing deletes another."""
+    tmp = Path(tempfile.mkdtemp())
+    original = tmp / "router.yaml"
+    original.write_text(_full_use_case_yaml(), encoding="utf-8")
+
+    fields = wizard.from_yaml(original)
+    rewritten = tmp / "router2.yaml"
+    wizard.write_yaml(rewritten, fields)
+
+    before, after = config.load(original), config.load(rewritten)
+    for attr in ("name", "description", "system_prompt", "judge_model",
+                 "max_tokens", "schedule_interval_days", "input_structure",
+                 "output_structure", "estimated_calls_per_day"):
+        check(f"{attr} survives", getattr(before, attr) == getattr(after, attr),
+              f"{getattr(before, attr)!r} -> {getattr(after, attr)!r}")
+    for attr in ("max_price_in", "max_price_out", "min_context", "require_json",
+                 "allow_free", "tiers"):
+        check(f"guardrails.{attr} survives",
+              getattr(before.guardrails, attr) == getattr(after.guardrails, attr),
+              f"{getattr(before.guardrails, attr)!r} -> {getattr(after.guardrails, attr)!r}")
+    check("notify email survives", before.notify.email == after.notify.email)
+    check("notify threshold survives",
+          before.notify.min_improvement == after.notify.min_improvement)
+    check("the endpoint survives", before.endpoint.url == after.endpoint.url
+          and before.endpoint.input_field == after.endpoint.input_field
+          and before.endpoint.timeout_seconds == after.endpoint.timeout_seconds)
+    check("the endpoint's header survives — it's the auth token",
+          before.endpoint.headers == after.endpoint.headers,
+          f"{before.endpoint.headers} -> {after.endpoint.headers}")
+    check("the code target survives", before.code_target.file == after.code_target.file
+          and before.code_target.current_model == after.code_target.current_model)
+    check("the rubric survives whole",
+          [(c.id, c.description, c.weight) for c in before.rubric]
+          == [(c.id, c.description, c.weight) for c in after.rubric])
+    check("the checks survive whole",
+          [(a.type, a.value, a.negate, a.required, a.case_sensitive, a.weight)
+           for a in before.assertions]
+          == [(a.type, a.value, a.negate, a.required, a.case_sensitive, a.weight)
+              for a in after.assertions])
+
+    # THE ONES NO FORM SHOWS, and therefore the ones a round trip would eat.
+    overridden = next(tc for tc in after.test_cases if tc.id == "has_overrides")
+    check("a per-test-case RUBRIC override survives",
+          [(c.id, c.weight) for c in overridden.rubric] == [("strictness", 3.0)],
+          f"{[(c.id, c.weight) for c in overridden.rubric]}")
+    check("a per-test-case CHECK override survives",
+          any(a.type == "equals" and a.value == "technical" for a in overridden.assertions),
+          f"{[(a.type, a.value) for a in overridden.assertions]}")
+    # And the plain test case must NOT have gained a pinned copy of the
+    # shared rubric — that's what reading through `config.load` would do,
+    # turning inheritance into hardcoded duplicates.
+    import yaml as yaml_module
+    raw_after = yaml_module.safe_load(rewritten.read_text(encoding="utf-8"))
+    plain = next(tc for tc in raw_after["testCases"] if tc["id"] == "plain")
+    check("inheritance stays inheritance, not a pinned copy",
+          "rubric" not in plain and "assertions" not in plain, f"{plain}")
+
+
+def test_the_fingerprint_is_identical_after_a_no_op_edit() -> None:
+    """THE SHARPEST VERSION OF THE ROUND-TRIP TEST. If opening the edit form
+    and saving without touching anything changed the fingerprint, it would
+    break the trend line and warn "not comparable" for an edit that changed
+    nothing — and every field-by-field check above could still pass while
+    that was true."""
+    tmp = Path(tempfile.mkdtemp())
+    original = tmp / "router.yaml"
+    original.write_text(_full_use_case_yaml(), encoding="utf-8")
+    rewritten = tmp / "router2.yaml"
+    wizard.write_yaml(rewritten, wizard.from_yaml(original))
+    check("a no-op edit changes nothing measurable",
+          config.measurement(config.load(original))["combined"]
+          == config.measurement(config.load(rewritten))["combined"])
+
+
+def test_overrides_are_carried_across_a_form_submission_by_id() -> None:
+    """`from_form` rebuilds test cases from the form, which has no inputs for
+    per-test-case overrides. Matched by ID rather than position, so
+    reordering or inserting a test case can't move someone's override onto
+    the wrong one."""
+    existing = wizard.WizardFields(test_cases=[
+        {"id": "a", "input": "1", "rubric": [{"id": "x", "description": "d", "weight": 2.0}]},
+        {"id": "b", "input": "2", "assertions": [{"type": "contains", "value": "yes"}]},
+        {"id": "gone", "input": "3", "rubric": [{"id": "y", "description": "d"}]},
+    ])
+    # Submitted with a new test case FIRST, so positions no longer line up,
+    # and with "gone" deleted.
+    submitted = wizard.WizardFields(test_cases=[
+        {"id": "inserted", "input": "0"},
+        {"id": "b", "input": "2 edited"},
+        {"id": "a", "input": "1"},
+    ])
+    wizard.carry_over_overrides(submitted, existing)
+    by_id = {tc["id"]: tc for tc in submitted.test_cases}
+    check("a's rubric override followed its id, not its position",
+          by_id["a"].get("rubric") == [{"id": "x", "description": "d", "weight": 2.0}],
+          f"{by_id['a']}")
+    check("b's check override survived an edit to its input",
+          by_id["b"].get("assertions") == [{"type": "contains", "value": "yes"}],
+          f"{by_id['b']}")
+    check("the new test case gained nothing", "rubric" not in by_id["inserted"]
+          and "assertions" not in by_id["inserted"], f"{by_id['inserted']}")
+    check("a deleted test case's override went with it", "gone" not in by_id, f"{by_id}")
+
+
+def test_write_yaml_is_atomic_and_leaves_no_temp_file() -> None:
+    """An edit REPLACES something that already worked, so a half-written
+    file is worse here than for a create — it would leave a broken feature
+    where a working one was."""
+    tmp = Path(tempfile.mkdtemp())
+    dest = tmp / "f.yaml"
+    f = wizard.WizardFields(name="f", system_prompt="hi",
+                            test_cases=[{"id": "t", "input": "i"}],
+                            rubric=[{"id": "q", "description": "d"}])
+    wizard.write_yaml(dest, f)
+    check("the file is written", dest.exists())
+    check("no temp file is left behind", list(tmp.glob("*.tmp")) == [],
+          f"{list(tmp.glob('*.tmp'))}")
+    check("and it loads", config.load(dest).name == "f")
+
+
+def _edit_client(yaml_text: str):
+    """A test client plus a project holding one saved feature."""
+    from modelcicd import dashboard
+    tmp = Path(tempfile.mkdtemp())
+    original = project.DEFAULT_DIR
+    project.DEFAULT_DIR = tmp / "projects"
+    project.create("Edit Test", slug="edit-test", notify_email="t@example.com")
+    ucs = project.use_cases_dir("edit-test")
+    ucs.mkdir(parents=True, exist_ok=True)
+    (ucs / "router.yaml").write_text(yaml_text, encoding="utf-8")
+    app = dashboard.create_app()
+    app.config["TESTING"] = True
+    return app.test_client(), original
+
+
+def _edit_form(**overrides) -> dict:
+    form = {
+        "name": "router", "description": "routes tickets",
+        "system_prompt": "Decide which team handles this.",
+        "testcase_id": ["plain", "has_overrides"],
+        "testcase_input": ["my card was charged twice", "the upload crashes"],
+        "testcase_reference": ["billing", "technical"],
+        "rubric_id": ["clarity"], "rubric_description": ["is it clear"],
+        "rubric_weight": ["1.0"],
+        "assert_type": ["has-keys"], "assert_value": ["team"],
+        "assert_path": [""], "assert_weight": ["1.0"], "assert_required": ["0"],
+        "judge_model": "pinned/judge", "max_tokens": "900",
+        "max_price_in": "0.25", "max_price_out": "1.5", "min_context": "64000",
+        "require_json": "on", "tiers": ["paid-low"],
+        "notify_email": "someone@example.com", "min_improvement": "0.35",
+    }
+    form.update(overrides)
+    return form
+
+
+def test_the_edit_route_saves_and_keeps_the_hand_written_overrides() -> None:
+    client_, original = _edit_client(_full_use_case_yaml())
+    try:
+        r = client_.post("/projects/edit-test/usecase/router/edit",
+                         data=_edit_form(rubric_description=["is it CRYSTAL clear"]))
+        check("the edit saves", r.status_code == 303, f"{r.status_code}")
+        saved = config.load(project.use_cases_dir("edit-test") / "router.yaml")
+        check("the edited rubric is written",
+              saved.rubric[0].description == "is it CRYSTAL clear",
+              f"{saved.rubric[0].description}")
+        overridden = next(tc for tc in saved.test_cases if tc.id == "has_overrides")
+        check("the per-test-case rubric override survived the form",
+              any(c.id == "strictness" for c in overridden.rubric),
+              f"{[c.id for c in overridden.rubric]}")
+        check("the per-test-case check override survived the form",
+              any(a.value == "technical" for a in overridden.assertions),
+              f"{[(a.type, a.value) for a in overridden.assertions]}")
+    finally:
+        project.DEFAULT_DIR = original
+
+
+def test_the_edit_route_ignores_an_attempt_to_rename() -> None:
+    """State, run history, the approved model and every saved run file are
+    keyed on the name. Renaming would orphan all of it while looking like it
+    worked, so the form shows it read-only AND the route refuses a changed
+    one — a stale page must not be able to do it either."""
+    client_, original = _edit_client(_full_use_case_yaml())
+    try:
+        client_.post("/projects/edit-test/usecase/router/edit",
+                     data=_edit_form(name="something_else"))
+        ucs = project.use_cases_dir("edit-test")
+        names = sorted(p.stem for p in ucs.glob("*.yaml"))
+        check("no second file was created", names == ["router"], f"{names}")
+        check("the name inside is unchanged",
+              config.load(ucs / "router.yaml").name == "router")
+    finally:
+        project.DEFAULT_DIR = original
+
+
+def test_the_edit_route_refuses_to_replace_a_working_file_with_a_broken_one() -> None:
+    """An edit overwrites something that already ran. `wizard.validate`
+    catches what a person gets wrong in the form; `config.load` is what
+    every run actually uses, so the rendered result is loaded before it
+    replaces anything."""
+    client_, original = _edit_client(_full_use_case_yaml())
+    try:
+        before = (project.use_cases_dir("edit-test") / "router.yaml").read_text(
+            encoding="utf-8")
+        r = client_.post("/projects/edit-test/usecase/router/edit",
+                         data=_edit_form(rubric_id=[""], rubric_description=[""]))
+        check("an empty rubric is refused", r.status_code == 400, f"{r.status_code}")
+        check("with the reason shown", "rubric criterion" in r.get_data(as_text=True))
+        after = (project.use_cases_dir("edit-test") / "router.yaml").read_text(
+            encoding="utf-8")
+        check("the working file is untouched", before == after)
+        check("and no probe temp file is left behind",
+              list(project.use_cases_dir("edit-test").glob("*.tmp")) == [],
+              f"{list(project.use_cases_dir('edit-test').glob('*.tmp'))}")
+    finally:
+        project.DEFAULT_DIR = original
+
+
+def test_the_edit_form_shows_enough_rows_for_what_already_exists() -> None:
+    """A fixed row count is fine for a create form and a silent-data-loss bug
+    in an edit one: a feature with more test cases than slots would submit
+    only the visible ones, and `from_form` rebuilds the list from what it
+    receives — deleting the rest."""
+    import textwrap
+    many = textwrap.dedent("""
+        useCase: router
+        systemPrompt: hi
+        rubric:
+          - id: q
+            description: d
+        testCases:
+    """).lstrip() + "".join(
+        f"  - id: tc{i}\n    input: input {i}\n" for i in range(11))
+    client_, original = _edit_client(many)
+    try:
+        body = client_.get("/projects/edit-test/usecase/router/edit").get_data(as_text=True)
+        for i in range(11):
+            check(f"test case tc{i} has a slot", f'value="tc{i}"' in body,
+                  "a row that isn't rendered gets deleted on save")
+        slots = body.count('name="testcase_id"')
+        check("and spare slots remain", slots >= 12, f"{slots} slots")
+    finally:
+        project.DEFAULT_DIR = original
+
+
 # ── health probe: drop only what is provably gone ───────────────────────────
 #
 # TWICE-OBSERVED FAILURE THIS GUARDS. A deprecated model id keeps looking

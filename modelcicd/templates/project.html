@@ -85,7 +85,10 @@
     {% for name in defined_not_run %}
     <div style="display:flex; align-items:center; justify-content:space-between; gap:var(--sp-3); flex-wrap:wrap;">
       <span class="mono">{{ name }}</span>
-      <a class="btn btn-sm" href="{{ url_for('run_form', project=project.slug, name=name) }}">Run bench</a>
+      <span class="toolbar" style="margin:0;">
+        <a class="btn btn-sm" href="{{ url_for('run_form', project=project.slug, name=name) }}">Run bench</a>
+        <a class="btn btn-sm" href="{{ url_for('edit_use_case', project=project.slug, name=name) }}">Edit</a>
+      </span>
     </div>
     {% endfor %}
   </div>

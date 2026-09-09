@@ -130,10 +130,12 @@
   <div class="toolbar" style="margin-top:var(--sp-3);">
     <a class="btn btn-sm" href="{{ scoped_url('run_detail', project=project.slug, filename=row.latest_run_filename) }}">Full leaderboard &amp; answers</a>
     <a class="btn btn-sm" href="{{ url_for('run_form', project=project.slug, name=uc.name) }}">Run again</a>
+    <a class="btn btn-sm" href="{{ url_for('edit_use_case', project=project.slug, name=uc.name) }}">Edit</a>
   </div>
   {% elif not state.history %}
   <div class="toolbar" style="margin-top:var(--sp-4);">
     <a class="btn btn-sm btn-primary" href="{{ url_for('run_form', project=project.slug, name=uc.name) }}">Run first bench</a>
+    <a class="btn btn-sm" href="{{ url_for('edit_use_case', project=project.slug, name=uc.name) }}">Edit</a>
     <span class="muted">not benched yet — nothing has been tested for this feature</span>
   </div>
   {% endif %}

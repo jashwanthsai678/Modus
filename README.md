@@ -219,6 +219,16 @@ anywhere else, and nothing about it is required to use the CLI. Think
   instead of a flat row of equally-weighted buttons. Any feature that's been
   defined but never benched is called out by name with a direct "Run" link,
   so a saved feature never quietly disappears.
+- **Edit a feature** — the same form that creates one also edits one in
+  place, so changing a rubric or adding a deterministic check no longer means
+  hand-editing YAML. It warns first when the feature has run history, because
+  changing the prompt, test cases, rubric, checks or judge changes what a
+  score *means* (see fingerprints above). The name is read-only: state, run
+  history, the approved model and every saved run file are keyed on it, and a
+  rename would orphan all of that while looking like it worked. Editing the
+  `use_case.yaml` in a text editor is still the other door, and still the more
+  powerful one — the form deliberately preserves what it doesn't show,
+  including per-test-case rubric and assertion overrides.
 - **Run page** — pick a price tier and an optional candidate limit, see the
   exact candidate list and call-count cost *before* anything is spent, then
   run the bench right there — the same `runner.execute` the CLI's `run`

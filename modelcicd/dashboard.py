@@ -442,7 +442,7 @@ def create_app() -> Flask:
                 return render_template("wizard.html", project=proj, errors=errors,
                                       fields=fields)
             dest = project_module.use_cases_dir(slug) / f"{fields.name.strip()}.yaml"
-            dest.write_text(wizard_module.to_yaml(fields), encoding="utf-8")
+            wizard_module.write_yaml(dest, fields)
             return redirect(url_for("project_detail", slug=slug), code=303)
 
         fields = None
@@ -452,6 +452,76 @@ def create_app() -> Flask:
             if candidates and 0 <= from_scan < len(candidates):
                 fields = _fields_from_scan_candidate(proj, candidates[from_scan])
         return render_template("wizard.html", project=proj, errors=[], fields=fields)
+
+    # ── Editing a feature that already exists ────────────────────────────────
+    #
+    # THE SAME FORM, NOT A SECOND ONE. Creating and editing a feature ask for
+    # exactly the same things, so `wizard.html` serves both and there is one
+    # place to keep correct. Until this existed, changing a saved rubric or
+    # adding a deterministic check meant hand-editing YAML — the last part of
+    # the loop with no door but a text editor.
+    #
+    # THE NAME IS NOT EDITABLE HERE. State, run history, the approved model
+    # and every saved run file are keyed on the feature's name; renaming
+    # would orphan all of it while looking like a rename succeeded. Refused
+    # server-side too, not just disabled in the form.
+
+    @app.route("/projects/<project>/usecase/<path:name>/edit", methods=["GET", "POST"])
+    def edit_use_case(project, name):
+        from . import config as config_module
+        try:
+            proj = project_module.load(project)
+        except FileNotFoundError:
+            abort(404, f"no project at {project!r}")
+        uc_path = project_module.find_use_case(project, name)
+        if not uc_path:
+            abort(404, f"no use_case.yaml found for {name!r} in project {project!r}.")
+
+        existing = wizard_module.from_yaml(uc_path)
+
+        if request.method == "POST":
+            fields = wizard_module.from_form(request.form.getlist, request.form.get)
+            # The form submits the name read-only; a mismatch means it was
+            # edited anyway (or the page was stale), and silently writing to
+            # a new file would leave two features and orphan the history.
+            fields.name = existing.name
+            # Per-test-case rubric/assertion overrides have no form inputs —
+            # carried across so editing anything else can't delete them.
+            wizard_module.carry_over_overrides(fields, existing)
+
+            errors = wizard_module.validate(fields)
+            if errors:
+                return render_template("wizard.html", project=proj, errors=errors,
+                                      fields=fields, editing=name), 400
+            # VALIDATED BY THE REAL LOADER BEFORE REPLACING A WORKING FILE.
+            # `wizard.validate` checks what a person can get wrong in the
+            # form; `config.load` is what every run actually uses, and an
+            # edit overwrites something that already worked. Rendered to a
+            # temp file, loaded, and only then written into place.
+            probe = Path(str(uc_path) + ".probe.tmp")
+            try:
+                probe.write_text(wizard_module.to_yaml(fields), encoding="utf-8")
+                config_module.load(probe)
+            except (ValueError, FileNotFoundError) as exc:
+                return render_template("wizard.html", project=proj, fields=fields,
+                                      editing=name,
+                                      errors=[f"the saved file would not load: {exc}"]), 400
+            finally:
+                try:
+                    probe.unlink()
+                except OSError:
+                    pass
+
+            wizard_module.write_yaml(uc_path, fields)
+            return redirect(scoped_url("usecase", project=project, name=name,
+                                       ran="saved — the next run uses these settings"),
+                            code=303)
+
+        # What editing this will cost in comparability, stated before the
+        # edit rather than discovered as a broken trend line afterwards.
+        state = state_module.load(name, project_module.state_dir(project))
+        return render_template("wizard.html", project=proj, errors=[], fields=existing,
+                              editing=name, run_count=len((state.get("history") or [])))
 
     @app.route("/projects/<slug>/repo")
     def repo_file(slug):
@@ -680,7 +750,7 @@ def create_app() -> Flask:
                 continue
             f = e["fields"]
             dest = project_module.use_cases_dir(slug) / f"{f.name}.yaml"
-            dest.write_text(wizard_module.to_yaml(f), encoding="utf-8")
+            wizard_module.write_yaml(dest, f)
             written.append(f.name)
         if not written:
             return redirect(url_for("bulk_create_form", slug=slug), code=303)

@@ -13,6 +13,7 @@ reject anyway (a name, a system prompt, at least one test case, a rubric
 somewhere) — catching it here means a failed wizard prints one clear message
 instead of writing a file that then fails to load.
 """
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -189,6 +190,30 @@ def _clean_assertions(raw: list) -> list:
     return out
 
 
+def _test_case_doc(tc: dict) -> dict:
+    """One test case's YAML entry.
+
+    CARRIES ITS PER-TEST-CASE OVERRIDES THROUGH. `rubric` and `assertions`
+    on a single test case aren't editable in any form — they're an advanced,
+    hand-written thing — but they MUST survive a round trip, because the
+    edit form reads a file into `WizardFields` and writes it back out. Drop
+    them here and editing a feature's price ceiling through the UI would
+    silently delete a rubric override someone wrote by hand. That is the
+    exact class of quiet data loss this project keeps having to design
+    against, and an edit form is where it would finally bite."""
+    entry = {"id": tc["id"].strip(), "input": tc["input"]}
+    if tc.get("reference"):
+        entry["reference"] = tc["reference"]
+    if tc.get("rubric"):
+        entry["rubric"] = [
+            {"id": c["id"], "description": c["description"],
+             "weight": float(c.get("weight") or 1.0)}
+            for c in tc["rubric"]]
+    if tc.get("assertions"):
+        entry["assertions"] = _clean_assertions(tc["assertions"])
+    return entry
+
+
 def to_yaml(f: WizardFields) -> str:
     """Renders the exact schema `config.load` expects. Blank/incomplete rows
     in test_cases and rubric are dropped, not written as broken entries."""
@@ -197,9 +222,7 @@ def to_yaml(f: WizardFields) -> str:
         "description": f.description or "",
         "systemPrompt": f.system_prompt,
         "testCases": [
-            {"id": tc["id"].strip(), "input": tc["input"],
-             **({"reference": tc["reference"]} if tc.get("reference") else {})}
-            for tc in f.test_cases
+            _test_case_doc(tc) for tc in f.test_cases
             if (tc.get("id") or "").strip() and (tc.get("input") or "").strip()
         ],
         "rubric": [
@@ -240,6 +263,125 @@ def to_yaml(f: WizardFields) -> str:
     if f.output_structure:
         doc["outputStructure"] = f.output_structure
     return yaml.safe_dump(doc, sort_keys=False, allow_unicode=True)
+
+
+# ── Reading an existing feature back, for editing ───────────────────────────
+
+def from_yaml(path) -> WizardFields:
+    """The inverse of `to_yaml`: a saved use_case.yaml back into editable
+    fields, so the same form that creates a feature can edit one.
+
+    READS THE RAW YAML, NOT `config.load`. That loader is deliberately
+    lossy in a way that would be destructive here: it resolves defaults
+    (giving every test case the use-case rubric when it has no override of
+    its own, and merging shared assertions into each test case's list), so
+    round-tripping through it would rewrite every test case with an
+    explicit copy of the shared rubric — turning inherited values into
+    pinned ones, and quietly breaking the inheritance the file was written
+    to use. The raw document is the only faithful source for "what did the
+    author actually write".
+
+    `config.load` is still the validator — `dashboard`'s edit route runs it
+    on the result before writing anything — this function just doesn't use
+    it as a reader.
+    """
+    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    f = WizardFields()
+    f.name = raw.get("useCase", "")
+    f.description = raw.get("description", "") or ""
+    f.system_prompt = raw.get("systemPrompt", "")
+
+    for tc in raw.get("testCases") or []:
+        entry = {"id": tc.get("id", ""), "input": tc.get("input", ""),
+                 "reference": tc.get("reference")}
+        # Preserved verbatim, never surfaced in the form — see `_test_case_doc`.
+        if tc.get("rubric"):
+            entry["rubric"] = tc["rubric"]
+        if tc.get("assertions"):
+            entry["assertions"] = tc["assertions"]
+        f.test_cases.append(entry)
+
+    f.rubric = [dict(c) for c in (raw.get("rubric") or [])]
+    f.assertions = [dict(a) for a in (raw.get("assertions") or [])]
+
+    g = raw.get("guardrails") or {}
+    f.max_price_in = float(g.get("maxPriceIn", f.max_price_in))
+    f.max_price_out = float(g.get("maxPriceOut", f.max_price_out))
+    f.min_context = int(g.get("minContext", f.min_context))
+    f.require_json = bool(g.get("requireJson", f.require_json))
+    f.allow_free = bool(g.get("allowFree", f.allow_free))
+    f.tiers = list(g.get("tiers") or f.tiers)
+
+    f.judge_model = raw.get("judgeModel") or f.judge_model
+    f.max_tokens = int(raw.get("maxTokens", f.max_tokens))
+
+    n = raw.get("notify") or {}
+    f.notify_email = n.get("email")
+    f.min_improvement = float(n.get("minImprovement", f.min_improvement))
+
+    e = raw.get("endpoint") or {}
+    if e.get("url"):
+        f.endpoint_url = e["url"]
+        f.endpoint_method = e.get("method", "POST")
+        f.endpoint_input_field = e.get("inputField", "input")
+        f.endpoint_response_field = e.get("responseField", "output")
+        f.endpoint_timeout_seconds = float(e.get("timeoutSeconds", 30.0))
+        # One "Name: value" line, matching what `_headers` parses back out.
+        headers = e.get("headers") or {}
+        if headers:
+            name, value = next(iter(headers.items()))
+            f.endpoint_header = f"{name}: {value}"
+
+    interval = (raw.get("schedule") or {}).get("intervalDays")
+    f.schedule_interval_days = int(interval) if interval else None
+
+    ct = raw.get("codeTarget") or {}
+    if ct.get("file"):
+        f.code_file = ct["file"]
+        f.code_current_model = ct.get("currentModel")
+
+    calls = (raw.get("usage") or {}).get("callsPerDay")
+    f.estimated_calls_per_day = int(calls) if calls else None
+    f.input_structure = raw.get("inputStructure")
+    f.output_structure = raw.get("outputStructure")
+    return f
+
+
+def carry_over_overrides(new: WizardFields, existing: WizardFields) -> None:
+    """Copies per-test-case rubric/assertion overrides from the on-disk
+    version onto freshly submitted fields, matched by test case id.
+
+    WHY THIS IS NEEDED AT ALL. `from_form` rebuilds `test_cases` from the
+    form's inputs, and the form has no inputs for a single test case's own
+    rubric or assertions — they're an advanced, hand-written thing. Without
+    this, editing a feature's price ceiling through the UI would submit test
+    cases stripped of those overrides and write them away. Matched by id
+    rather than position, so reordering or inserting a test case doesn't
+    move someone's override onto the wrong one; an override whose test case
+    was deleted goes with it, which is correct.
+    """
+    by_id = {tc.get("id"): tc for tc in existing.test_cases if tc.get("id")}
+    for tc in new.test_cases:
+        old = by_id.get(tc.get("id"))
+        if not old:
+            continue
+        for key in ("rubric", "assertions"):
+            if old.get(key) and not tc.get(key):
+                tc[key] = old[key]
+
+
+def write_yaml(path, f: WizardFields) -> Path:
+    """Renders and writes one use_case.yaml ATOMICALLY — temp file then
+    `os.replace` — the same discipline `state.py` uses. A crash or a
+    concurrent reader can never observe a half-written config, which for an
+    EDIT (as opposed to a create) would mean a corrupted file where a
+    working feature used to be."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(f"{p.suffix}.{os.getpid()}.tmp")
+    tmp.write_text(to_yaml(f), encoding="utf-8")
+    os.replace(tmp, p)
+    return p
 
 
 # ── CLI collection ───────────────────────────────────────────────────────────

@@ -17,8 +17,11 @@
   <p class="muted">Checks are matched <strong>case-insensitively</strong> unless you say otherwise —
     against model prose, "Refund" vs "refund" is almost never the difference you meant to catch.</p>
 
-  {% for i in range(4) %}
-  {% set a = fields.assertions[i] if i < fields.assertions|length else None %}
+  {# Grows to fit, plus two spares — a fixed count would delete the extras
+     when this form is used to EDIT something that already has more. #}
+  {% set check_rows = [4, (fields.assertions|length if fields else 0) + 2]|max %}
+  {% for i in range(check_rows) %}
+  {% set a = fields.assertions[i] if fields and i < fields.assertions|length else None %}
   <fieldset>
     <legend>check {{ i + 1 }}</legend>
     <div class="row3">
@@ -62,4 +65,7 @@
     </div>
   </fieldset>
   {% endfor %}
+  {% if fields and fields.assertions|length >= check_rows - 1 %}
+  <p class="muted">Save, then reopen this page for two more slots.</p>
+  {% endif %}
 </div>

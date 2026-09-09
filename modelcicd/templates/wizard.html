@@ -1,15 +1,37 @@
 {% extends "base.html" %}
-{% block title %}Add an AI feature — {{ project.name }}{% endblock %}
+{% block title %}{{ 'Edit ' + editing if editing else 'Add an AI feature' }} — {{ project.name }}{% endblock %}
 {% block content %}
+{% if editing %}
+<p class="crumb"><a class="link" href="{{ scoped_url('usecase', project=project.slug, name=editing) }}">&larr; {{ editing }}</a></p>
+<h1>Edit <span class="mono">{{ editing }}</span></h1>
+<p class="muted">Editing <code>projects/{{ project.slug }}/use_cases/{{ editing }}.yaml</code> in place.
+  Nothing about what's approved or already run changes — this only affects the next run.</p>
+{% else %}
 <p class="muted"><a class="link" href="{{ url_for('project_detail', slug=project.slug) }}">&larr; {{ project.name }}</a></p>
 <h1>Add an AI feature</h1>
 <p class="muted">This becomes one <code>use_case.yaml</code> under
   <code>projects/{{ project.slug }}/use_cases/</code> — everything below maps to a field in it.</p>
+{% endif %}
 
 {% if errors %}
 <div class="card errors">
   <strong>Fix the following:</strong>
   <ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+{% if editing and run_count %}
+{# SAID BEFORE THE EDIT, not discovered afterwards as a broken trend line.
+   Changing the prompt, test cases, rubric, checks or judge changes what a
+   score MEANS — see the measurement fingerprint — so past runs stop being
+   comparable to future ones. That's often exactly what you want; it should
+   just never be a surprise. #}
+<div class="card">
+  <p style="margin:0;"><strong>This feature has {{ run_count }} run{{ 's' if run_count != 1 else '' }} of history.</strong>
+    Changing the system prompt, the test cases, the rubric, the deterministic checks or the judge
+    changes what a score <em>means</em> — future runs won't be comparable to those, and the trend
+    line will break where the change happened rather than joining across it. Price ceilings,
+    tiers and the notify threshold don't affect comparability.</p>
 </div>
 {% endif %}
 
@@ -26,9 +48,22 @@
 <form method="post">
   <div class="card">
     <h2 style="margin-top:0;">The feature</h2>
+    {% if editing %}
+    {# NOT EDITABLE. State, run history, the approved model and every saved
+       run file are keyed on this name; renaming would orphan all of it while
+       looking like it worked. The route refuses a changed name server-side
+       too, so a stale page can't do it either. #}
+    <label for="name">Name</label>
+    <input id="name" name="name" type="text" value="{{ fields.name }}" readonly
+           style="opacity: 0.7;">
+    <p class="hint" style="margin: 4px 0 0;">Can't be changed here — this feature's run history,
+      approved model and saved runs are all filed under this name. To rename, add a new feature
+      and reject or ignore this one.</p>
+    {% else %}
     <label for="name">Name <span class="hint">(used in resolve("name") — letters, numbers, underscores)</span></label>
     <input id="name" name="name" type="text" required value="{{ fields.name if fields else '' }}"
            placeholder="e.g. support_bot_reply">
+    {% endif %}
     <label for="description">Description</label>
     <input id="description" name="description" type="text" value="{{ fields.description if fields else '' }}">
     <label for="system_prompt">System prompt <span class="hint">(what every candidate — and your live endpoint, if you add one — is asked)</span></label>
@@ -42,10 +77,18 @@
   </div>
 
   <div class="card">
+    {# ROWS GROW TO FIT WHAT ALREADY EXISTS, plus three spares. A fixed count
+       was fine for a create form and is a silent-data-loss bug in an edit
+       one: a feature with ten test cases rendered in eight slots would
+       submit eight, and `from_form` rebuilds the list from what it receives
+       — so two test cases would be deleted by someone who came here to
+       change a price ceiling. #}
+    {% set tc_rows = [8, (fields.test_cases|length if fields else 0) + 3]|max %}
     <h2 style="margin-top:0;">Test cases</h2>
-    <p class="muted">At least one id + input. Blank rows are ignored. Need more than {{ 8 }}? Add them
-      by editing the saved YAML directly afterward.</p>
-    {% for i in range(8) %}
+    <p class="muted">At least one id + input. Blank rows are ignored.
+      {{ tc_rows }} slots shown{% if fields and fields.test_cases %} — {{ fields.test_cases|length }} in use{% endif %}.
+      Need more? Save, then reopen this page for three more.</p>
+    {% for i in range(tc_rows) %}
     {% set tc = fields.test_cases[i] if fields and i < fields.test_cases|length else None %}
     <fieldset>
       <legend>test case {{ i + 1 }}</legend>
@@ -68,9 +111,10 @@
   </div>
 
   <div class="card">
+    {% set rubric_rows = [6, (fields.rubric|length if fields else 0) + 2]|max %}
     <h2 style="margin-top:0;">Rubric</h2>
     <p class="muted">What the judge scores, 1-5, weighted. At least one id + description.</p>
-    {% for i in range(6) %}
+    {% for i in range(rubric_rows) %}
     {% set c = fields.rubric[i] if fields and i < fields.rubric|length else None %}
     <fieldset>
       <legend>criterion {{ i + 1 }}</legend>
@@ -228,6 +272,9 @@
   </div>
   {% endif %}
 
-  <button type="submit" class="btn btn-primary">Save AI feature</button>
+  <button type="submit" class="btn btn-primary">{{ 'Save changes' if editing else 'Save AI feature' }}</button>
+  {% if editing %}
+  <a class="btn" href="{{ scoped_url('usecase', project=project.slug, name=editing) }}">Cancel</a>
+  {% endif %}
 </form>
 {% endblock %}
