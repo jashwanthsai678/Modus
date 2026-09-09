@@ -9,6 +9,9 @@
 {% if saved %}
 <div class="card flash-success">Saved: {{ saved }}.</div>
 {% endif %}
+{% if dashboard_error %}
+<div class="card errors">{{ dashboard_error }}</div>
+{% endif %}
 
 <div class="card">
   <form method="post" action="{{ url_for('keys_save') }}">
@@ -38,4 +41,29 @@
   <code>python -m modelcicd.cli set-key --provider groq</code>
   (prompts, input hidden) &middot;
   <code>python -m modelcicd.cli keys</code> (shows this same status)</p>
+
+<div class="card" style="margin-top: var(--sp-5);">
+  <h2 style="margin-top:0;">Dashboard access</h2>
+  <p class="muted">Protects <strong>this whole dashboard</strong> — every page and the read-only
+    API — once this is reachable from anywhere but your own machine. Not set: anyone who finds
+    the URL can approve models, spend money on a run, and write into a connected app's source,
+    the same as you can right now.</p>
+  <form method="post" action="{{ url_for('keys_save') }}">
+    <label for="dashboard_key">Dashboard key
+      <span class="badge {{ 'approved' if dashboard_key_set else 'none' }}" style="margin-left: 6px;">
+        {{ 'protecting this dashboard' if dashboard_key_set else 'not set — dashboard is open' }}</span></label>
+    <input id="dashboard_key" name="dashboard_key" type="password"
+           placeholder="{{ 'leave blank to keep the current key' if dashboard_key_set else 'choose a key — anyone with it can approve and spend on your behalf' }}">
+    <button type="submit" class="btn btn-primary" style="margin-top: 14px;">
+      {{ 'Rotate key' if dashboard_key_set else 'Turn on protection' }}</button>
+  </form>
+  {% if dashboard_key_set %}
+  <p class="muted" style="margin: 10px 0 0;">Rotating this signs every other browser and every
+    server calling the API out at once — including anyone who had the old key.</p>
+  {% endif %}
+</div>
+
+<p class="muted">Same thing from the CLI:
+  <code>python -m modelcicd.cli set-dashboard-key</code> (prompts, input hidden) &middot;
+  <code>python -m modelcicd.cli keys</code> (also shows this status)</p>
 {% endblock %}

@@ -12,10 +12,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from modelcicd import (assertions, bench, cache, catalogue, client, code_patch,  # noqa: E402
-                       code_scan, config, endpoint_client, guardrails, health,
-                       judge, project, rank, runner, sandbox, scheduler, secrets,
-                       state, wizard)
+from modelcicd import (assertions, auth, bench, cache, catalogue, client,        # noqa: E402
+                       code_patch, code_scan, config, endpoint_client, guardrails,
+                       health, judge, project, rank, runner, sandbox, scheduler,
+                       secrets, state, wizard)
 
 FAILURES: list = []
 
@@ -2920,6 +2920,344 @@ def test_cache_clear_stale_keeps_what_a_run_would_still_reuse() -> None:
     check("only the stale one went", removed == 1, f"{removed}")
     check("the reusable one survived", c.get(fresh) == {"answer": "keep me"})
     check("clear-all removes the rest", cache.clear(tmp) == 1)
+
+
+# ── auth: one shared secret, off by default, that gates the whole dashboard
+#    once it's reachable by more than just you ──────────────────────────────
+#
+# THE STAKE. Eleven POST routes in dashboard.py approve models, spend real
+# money on a run, write API keys into .env, and patch a connected app's real
+# source code — all written assuming only 127.0.0.1 could ever reach them.
+# These checks exist to prove: (1) nothing changes for the existing
+# localhost-only workflow when no key is set, and (2) once a key IS set,
+# every one of those routes actually requires it.
+#
+# ISOLATION NOTE: os.environ is process-wide and this test module runs many
+# checks in one process, so every test that sets MODELCICD_API_KEY restores
+# it (deleting the var, not just resetting it to '') in a finally block —
+# leaking it into a later test would silently change that test's behavior.
+
+def _with_dashboard_key(value: str):
+    """Context-manager-shaped helper: sets MODELCICD_API_KEY for the
+    duration, restores whatever was there (including "wasn't set at all")
+    afterward."""
+    import os
+
+    class _Ctx:
+        def __enter__(self):
+            self._had = "MODELCICD_API_KEY" in os.environ
+            self._old = os.environ.get("MODELCICD_API_KEY")
+            os.environ["MODELCICD_API_KEY"] = value
+            return self
+
+        def __exit__(self, *a):
+            if self._had:
+                os.environ["MODELCICD_API_KEY"] = self._old
+            else:
+                os.environ.pop("MODELCICD_API_KEY", None)
+            return False
+
+    return _Ctx()
+
+
+def test_auth_is_off_when_no_key_is_configured() -> None:
+    import os
+    os.environ.pop("MODELCICD_API_KEY", None)
+    check("not configured", auth.configured() is False)
+    check("check() is False, never raises, with nothing set", auth.check("anything") is False)
+    check("check() is False even for an empty candidate", auth.check("") is False)
+    check("check() is False even for None", auth.check(None) is False)
+
+
+def test_auth_check_is_exact_and_constant_time_shaped() -> None:
+    with _with_dashboard_key("correct-horse-battery-staple"):
+        check("the right key passes", auth.check("correct-horse-battery-staple") is True)
+        check("a wrong key fails", auth.check("wrong") is False)
+        check("a prefix of the right key still fails", auth.check("correct-horse") is False)
+        check("whitespace around the candidate is trimmed",
+              auth.check("  correct-horse-battery-staple  ") is True)
+        # THE ACTUAL POINT OF USING hmac.compare_digest: this doesn't prove
+        # timing safety (that needs a timing harness), but it does prove
+        # the comparison isn't a naive `==` that a test could trivially
+        # replace and still pass everything else here.
+        import inspect
+        src = inspect.getsource(auth.check)
+        check("uses a constant-time comparison, not ==", "compare_digest" in src, src)
+
+
+def test_bearer_token_parses_only_the_bearer_scheme() -> None:
+    check("extracts the token", auth.bearer_token("Bearer abc123") == "abc123")
+    check("case-insensitive scheme", auth.bearer_token("bearer abc123") == "abc123")
+    check("wrong scheme is not a token", auth.bearer_token("Basic abc123") is None)
+    check("missing header is not a token", auth.bearer_token(None) is None)
+    check("bare 'Bearer' with nothing after it is not a token",
+          auth.bearer_token("Bearer ") is None)
+
+
+def test_session_token_rotates_when_the_key_rotates() -> None:
+    """THE WHOLE POINT of computing this fresh from the live key on every
+    check, rather than caching a session object the way Flask's own
+    `session` does — a first attempt at this used Flask's session with a
+    secret set in `before_request`, and it didn't work at all (see the long
+    comment in `auth.py`: Flask opens the session before `before_request`
+    ever runs, using whatever secret existed at that moment — too early).
+    This hand-rolled version sidesteps that entirely: rotating the key must
+    invalidate every existing cookie, which only happens if the token
+    actually changes when the key does."""
+    with _with_dashboard_key("key-one"):
+        one = auth.session_token()
+        check("same key, same token, twice", auth.session_token() == one)
+        check("and it validates against itself", auth.session_cookie_valid(one) is True)
+    with _with_dashboard_key("key-two"):
+        two = auth.session_token()
+        check("a different key derives a different token", two != one, f"{one!r} vs {two!r}")
+        check("the OLD token no longer validates under the new key",
+              auth.session_cookie_valid(one) is False)
+
+
+def test_session_token_is_empty_and_never_validates_with_no_key_configured() -> None:
+    import os
+    os.environ.pop("MODELCICD_API_KEY", None)
+    check("empty token when auth is off", auth.session_token() == "")
+    check("nothing validates, not even the empty token itself",
+          auth.session_cookie_valid("") is False)
+    check("nor a garbage value", auth.session_cookie_valid("whatever") is False)
+
+
+def test_secrets_module_writes_and_reads_back_the_dashboard_key() -> None:
+    tmp = Path(tempfile.mkdtemp()) / ".env"
+    try:
+        secrets.set_dashboard_key("a-real-key", env_path=tmp)
+        check("written to the env file", "MODELCICD_API_KEY=a-real-key" in tmp.read_text(
+            encoding="utf-8"))
+        check("and os.environ was updated immediately, no restart needed", auth.configured())
+        check("the written key actually verifies", auth.check("a-real-key") is True)
+    finally:
+        import os
+        os.environ.pop("MODELCICD_API_KEY", None)
+
+
+def test_secrets_refuses_to_set_a_blank_dashboard_key() -> None:
+    """An empty MODELCICD_API_KEY is indistinguishable from unset to
+    auth.configured() — silently 'succeeding' here would leave the
+    dashboard open while a person believes they just locked it down."""
+    tmp = Path(tempfile.mkdtemp()) / ".env"
+    try:
+        secrets.set_dashboard_key("   ")
+        check("a blank key is refused", False)
+    except ValueError as exc:
+        check("a blank key is refused", True)
+        check("and explains the silent-open-door risk",
+              "silently" in str(exc) or "open" in str(exc), str(exc))
+
+
+# ── dashboard: the auth gate actually gates every route ──────────────────────
+
+def _auth_dashboard_client():
+    """A test client over a fresh, isolated dashboard — same shape as
+    `_api_client`, reused here so the auth tests don't depend on ordering
+    against the API tests below."""
+    from modelcicd import dashboard
+    tmp = Path(tempfile.mkdtemp())
+    original_state, original_out = dashboard.STATE_DIR, dashboard.OUT_DIR
+    dashboard.STATE_DIR, dashboard.OUT_DIR = tmp / "state", tmp / "out"
+    app = dashboard.create_app()
+    app.config["TESTING"] = True
+
+    def restore():
+        dashboard.STATE_DIR, dashboard.OUT_DIR = original_state, original_out
+
+    return app.test_client(), tmp, restore
+
+
+def test_dashboard_is_wide_open_when_no_key_is_configured() -> None:
+    """THE COMPATIBILITY GUARANTEE. Every one of this project's other
+    dashboard tests runs with no key set and expects routes to just answer
+    — this is that assumption, stated as its own check."""
+    import os
+    os.environ.pop("MODELCICD_API_KEY", None)
+    client_, tmp, restore = _auth_dashboard_client()
+    try:
+        check("home page, no auth needed", client_.get("/").status_code == 200)
+        check("API, no auth needed",
+              client_.get("/api/status/anything").status_code in (200, 404))
+        # 404 here is fine (no state for "anything") — the point is it's
+        # NOT 401, i.e. auth never entered the picture.
+        check("...and specifically not blocked by auth",
+              client_.get("/api/status/anything").status_code != 401)
+    finally:
+        restore()
+
+
+def test_dashboard_pages_redirect_to_login_once_a_key_is_set() -> None:
+    with _with_dashboard_key("secret123"):
+        client_, tmp, restore = _auth_dashboard_client()
+        try:
+            r = client_.get("/", follow_redirects=False)
+            check("an unauthenticated page visit is redirected", r.status_code == 302,
+                  f"{r.status_code}")
+            check("...specifically to /login", "/login" in r.headers.get("Location", ""),
+                  r.headers.get("Location"))
+            login_page = client_.get("/login")
+            check("but /login itself is reachable without being logged in",
+                  login_page.status_code == 200, f"{login_page.status_code}")
+        finally:
+            restore()
+
+
+def test_api_routes_return_401_json_not_a_redirect_once_a_key_is_set() -> None:
+    """A browser gets sent somewhere useful; a server integrating over HTTP
+    needs a status code and a JSON body it can branch on, not a 302 to an
+    HTML login page it has no way to fill in."""
+    with _with_dashboard_key("secret123"):
+        client_, tmp, restore = _auth_dashboard_client()
+        try:
+            r = client_.get("/api/resolve/anything")
+            check("401, not a redirect", r.status_code == 401, f"{r.status_code}")
+            check("a JSON body", r.content_type.startswith("application/json"), r.content_type)
+            check("explains how to authenticate",
+                  "Bearer" in r.get_json().get("error", ""), r.get_json())
+        finally:
+            restore()
+
+
+def test_a_valid_bearer_token_reaches_the_api_with_no_session_at_all() -> None:
+    """THE SERVER-TO-SERVER PATH — this is the one your own website's
+    backend actually uses. No cookie, no /login visit, just a header."""
+    with _with_dashboard_key("secret123"):
+        client_, tmp, restore = _auth_dashboard_client()
+        try:
+            r = client_.get("/api/status/anything",
+                            headers={"Authorization": "Bearer secret123"})
+            check("a correct bearer token is accepted", r.status_code in (200, 404),
+                  f"{r.status_code}")
+            check("never redirected to login", r.status_code != 302)
+            wrong = client_.get("/api/status/anything",
+                                headers={"Authorization": "Bearer nope"})
+            check("a wrong bearer token is refused", wrong.status_code == 401,
+                  f"{wrong.status_code}")
+        finally:
+            restore()
+
+
+def test_logging_in_unlocks_the_browser_session_for_subsequent_requests() -> None:
+    """The human path end to end: fail with a wrong key, succeed with the
+    right one, then prove the SESSION (not the key) is what carries — the
+    next request has no Authorization header at all."""
+    with _with_dashboard_key("secret123"):
+        client_, tmp, restore = _auth_dashboard_client()
+        try:
+            wrong = client_.post("/login", data={"key": "nope"})
+            check("wrong key stays on the login page", wrong.status_code == 200,
+                  f"{wrong.status_code}")
+            check("and says so", "match" in wrong.get_data(as_text=True))
+
+            right = client_.post("/login", data={"key": "secret123"}, follow_redirects=False)
+            check("correct key redirects away from login", right.status_code == 302,
+                  f"{right.status_code}")
+
+            after = client_.get("/")
+            check("the SAME client, no header this time, now gets through",
+                  after.status_code == 200, f"{after.status_code}")
+        finally:
+            restore()
+
+
+def test_login_next_redirect_is_restricted_to_same_site_paths() -> None:
+    """`next` comes from a query/form value a crafted link could set. A bare
+    `//evil.example` has no scheme and no explicit host in the string, but a
+    browser treats a leading `//` as protocol-relative to another host
+    entirely — so it must be rejected the same as a full `https://` URL,
+    not just checked for a scheme."""
+    with _with_dashboard_key("secret123"):
+        client_, tmp, restore = _auth_dashboard_client()
+        try:
+            for bad_next in ("https://evil.example/steal", "//evil.example/steal"):
+                r = client_.post("/login", data={"key": "secret123", "next": bad_next},
+                                 follow_redirects=False)
+                check(f"rejected open-redirect target: {bad_next}",
+                      "evil.example" not in r.headers.get("Location", ""),
+                      r.headers.get("Location"))
+        finally:
+            restore()
+
+
+def test_logout_is_post_only_and_clears_the_session() -> None:
+    with _with_dashboard_key("secret123"):
+        client_, tmp, restore = _auth_dashboard_client()
+        try:
+            client_.post("/login", data={"key": "secret123"})
+            check("session works before logout", client_.get("/").status_code == 200)
+            get_logout = client_.get("/logout")
+            check("logout refuses GET", get_logout.status_code == 405, f"{get_logout.status_code}")
+            client_.post("/logout", follow_redirects=False)
+            after = client_.get("/", follow_redirects=False)
+            check("logged out -> redirected again", after.status_code == 302,
+                  f"{after.status_code}")
+        finally:
+            restore()
+
+
+def test_setting_the_dashboard_key_from_the_keys_page_does_not_lock_out_the_setter() -> None:
+    """THE BUG THIS TEST EXISTS FOR: the response that turns auth ON must
+    carry a cookie that's valid under the key that response JUST wrote —
+    not stale from before the write happened. Get that wrong and the person
+    who just protected their own dashboard is immediately locked out of it
+    (an earlier version of this feature had exactly that bug, caught by an
+    earlier version of this very test).
+
+    WRITES TO AN ISOLATED PATH, NOT THE REAL .env — `dashboard.py`'s
+    `/keys` route has no parameter for where to write; it always calls
+    `secrets_module.set_dashboard_key` at its default location. The first
+    version of this test didn't account for that and, while proving the
+    lock-out fix worked, ALSO wrote a real `MODELCICD_API_KEY` line into
+    this repo's actual `.env` — found only by noticing the dashboard's own
+    CLI warning had gone silent afterward. `secrets_module.set_dashboard_key`
+    is monkeypatched for the duration to redirect that one write, the same
+    way other tests in this file swap `client_module.call_json` to keep a
+    network call from happening at all."""
+    import os
+    os.environ.pop("MODELCICD_API_KEY", None)
+    client_, tmp, restore = _auth_dashboard_client()
+    original_set = secrets.set_dashboard_key
+    isolated_path = tmp / ".env"
+
+    def fake_set_dashboard_key(value, **_ignored):
+        return original_set(value, env_path=isolated_path)
+
+    from modelcicd import dashboard
+    dashboard.secrets_module.set_dashboard_key = fake_set_dashboard_key
+    try:
+        r = client_.post("/keys", data={"dashboard_key": "brand-new-key"},
+                         follow_redirects=False)
+        check("the save redirects normally", r.status_code == 303, f"{r.status_code}")
+        check("the write landed in the ISOLATED file, not the repo's own .env",
+              "MODELCICD_API_KEY=brand-new-key" in isolated_path.read_text(encoding="utf-8"))
+        # THE SAME client, SAME cookie jar, next request — no Authorization
+        # header, nothing re-typed. This is the request that would fail if
+        # the ordering bug were still there.
+        after = client_.get("/", follow_redirects=False)
+        check("the same browser is still signed in on the very next request",
+              after.status_code == 200, f"{after.status_code}")
+    finally:
+        dashboard.secrets_module.set_dashboard_key = original_set
+        os.environ.pop("MODELCICD_API_KEY", None)
+        restore()
+
+
+def test_a_blank_dashboard_key_from_the_keys_page_is_refused_not_silently_ignored() -> None:
+    import os
+    os.environ.pop("MODELCICD_API_KEY", None)
+    client_, tmp, restore = _auth_dashboard_client()
+    try:
+        r = client_.post("/keys", data={"dashboard_key": "   "}, follow_redirects=True)
+        check("still on the keys page with an error, not silently accepted",
+              "already exists" not in r.get_data(as_text=True)
+              and r.status_code == 200)
+        check("auth was not turned on by a blank value", not auth.configured())
+    finally:
+        os.environ.pop("MODELCICD_API_KEY", None)
+        restore()
 
 
 # ── dashboard: the read-only JSON API — the one door to other languages ─────

@@ -498,6 +498,11 @@
               title="Switch between light and dark" aria-label="Toggle colour theme">🌓</button>
       <a href="{{ url_for('keys_form') }}" class="btn">API keys</a>
       <a href="{{ url_for('connect_project_form') }}" class="btn btn-primary">New project</a>
+      {% if signed_in %}
+      <form method="post" action="{{ url_for('logout') }}" style="margin:0;">
+        <button type="submit" class="btn">Sign out</button>
+      </form>
+      {% endif %}
     </nav>
   </header>
   <main>{% block content %}{% endblock %}</main>

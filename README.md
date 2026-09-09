@@ -281,11 +281,66 @@ behind this API can approve a candidate, reject one, or spend money running a
 bench — those still require a human at the CLI or the dashboard's own POST
 routes, unchanged. Widening this to accept writes would be widening *who* can
 approve, which is a different and much bigger decision than "let another
-language read what's already been approved." And this project has no auth
-story at all — self-hosted, single-tenant, local-only by default — so if you
-ever expose the dashboard beyond `127.0.0.1`, that's an operator decision
-made with a reverse proxy in front of it, the same as any other local dev
-server; nothing here tries to solve that for you.
+language read what's already been approved."
+
+Calling this from your own website's **backend** — its server-side code, not
+browser JavaScript — is the intended shape: no CORS to think about, and the
+key below stays a server-side secret instead of something shipped to every
+visitor's browser.
+
+---
+
+## Protecting the dashboard, once it's reachable by more than just you
+
+Every route in this project — the API above, and every dashboard page —
+was written assuming `127.0.0.1` was the entire security model, because
+nothing outside your own machine could ever route to it. That's still true
+by default. The moment `cli ui` needs to answer a request from somewhere
+else — a website's backend, a real deployed host — that assumption is gone,
+and eleven `POST` routes that approve models, spend real money on a run,
+write API keys into `.env`, and patch a connected app's actual source code
+become reachable by anyone who finds the URL.
+
+Set `MODELCICD_API_KEY` and every route — dashboard pages and the API
+alike — requires it. Leave it unset and **nothing changes**: this is off by
+default, the same shape as `--cache` or the health check.
+
+```bash
+python -m modelcicd.cli set-dashboard-key     # prompts, input hidden
+python -m modelcicd.cli keys                  # shows whether it's set, never the value
+```
+
+Or from the dashboard's own **API keys** page — which also signs the
+browser that just set it in immediately, so turning protection on doesn't
+lock you out of your own dashboard.
+
+**Two ways in, for the two kinds of caller:**
+
+```bash
+# a server calling the API — no cookie, no login step
+curl -H "Authorization: Bearer <key>" http://your-host:5000/api/resolve/support_bot_reply
+
+# a person in a browser — visit /login once, paste the key, done
+```
+
+Signing in sets a signed cookie proving you hold the key — checked fresh
+against the *current* key on every request, never cached, so rotating the
+key (set a new one the same way) signs every other browser and every server
+integration out at once, immediately, with no separate revocation step.
+
+**What this doesn't cover.** One shared secret for one operator's own
+deployment — matching this project's single-tenant design throughout, not a
+login system for multiple distinct people or organizations each with their
+own data. There's no CSRF protection on the browser-cookie path (a
+malicious page could in principle auto-submit a form to a signed-in
+browser's dashboard) and no rate limiting. If you're deploying this for real
+traffic rather than your own use, also run it behind a real WSGI server
+(Flask's own dev server says so on every startup) and terminate TLS with a
+reverse proxy in front of it — this project doesn't attempt either.
+
+`cli ui --host 0.0.0.0` (or any non-loopback host) prints a loud warning if
+you do it with no key configured, rather than silently letting you expose
+every route unprotected.
 
 ---
 
@@ -301,7 +356,8 @@ under two different names was its own small source of confusion.
 | `init` | free | Writes a starting `use_case.yaml` template |
 | `onboarding` | free | Prints the guided quickstart |
 | `set-key --provider {openrouter,groq,fireworks} [--key <value>]` | free | Saves a platform's API key to `.env` (prompts, hidden, if `--key` omitted) |
-| `keys` | free | Which platforms have a key configured |
+| `set-dashboard-key [--key <value>]` | free | Saves the key that protects the whole dashboard once it's reachable by more than localhost |
+| `keys` | free | Which platforms — and the dashboard itself — have a key configured |
 | `project create --name <n> [--description] [--notify-email] [--repo-path <dir> \| --repo-url <url>] [--providers <list>]` | free | Connects a new application |
 | `project list` | free | Lists connected applications |
 | `scan-repo --project <slug> [--scan-model <id>] [--max-files <n>] [--yes]` | **$** | Reads the connected repo with a model to find likely LLM call sites |
@@ -587,6 +643,7 @@ write to this same file:
 | `FIREWORKS_API_KEY` | only if a project searches Fireworks | Fireworks-sourced candidates are called through Fireworks directly |
 | `MODELCICD_NOTIFY_EMAIL` | no | Default recipient for pending-candidate emails, if not set per use case |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` / `SMTP_FROM` / `SMTP_STARTTLS` | no | If unset, the CLI prints the approve command instead of emailing it |
+| `MODELCICD_API_KEY` | no — but see [Protecting the dashboard](#protecting-the-dashboard-once-its-reachable-by-more-than-just-you) | Unset means the dashboard is wide open, same as always; set means every page and the API require it |
 
 API keys never belong in a `use_case.yaml` — that file is meant to be
 committed to your repo, and a config with a key in it is a leaked key.
@@ -602,6 +659,7 @@ modelcicd/
   config.py          load and validate a use_case.yaml (incl. endpoint/schedule/codeTarget blocks)
   client.py          the one place this project calls a CANDIDATE model — standalone, endpoint/key are parameters
   secrets.py         the one place this project writes an API key (into .env, nowhere new)
+  auth.py            one shared secret that gates the dashboard once it's reachable beyond localhost
   cache.py           content-addressed model responses, so a rubric edit doesn't re-buy the answers
   endpoint_client.py the one place this project calls a use case's OWN live endpoint
   sandbox.py         run one candidate (through ITS OWN platform) or the live endpoint, against the test cases

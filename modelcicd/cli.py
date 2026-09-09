@@ -123,9 +123,29 @@ def cmd_set_key(args) -> int:
 
 
 def cmd_keys(args) -> int:
+    from . import auth as auth_module
     from . import secrets as secrets_module
     for provider, configured in secrets_module.status().items():
         print(f"{provider:<12} {'configured' if configured else 'not set'}")
+    print(f"{'dashboard':<12} "
+          f"{'protecting the dashboard' if auth_module.configured() else 'not set — dashboard is open to anyone who can reach it'}")
+    return 0
+
+
+def cmd_set_dashboard_key(args) -> int:
+    """The one key that gates `cli ui` once it's reachable by more than
+    localhost — see `auth.py`. Kept as its own command rather than folded
+    into `--provider`, because it isn't a model marketplace's key at all."""
+    from . import secrets as secrets_module
+
+    value = args.key or getpass.getpass("dashboard key (input hidden): ")
+    try:
+        secrets_module.set_dashboard_key(value)
+    except ValueError as exc:
+        print(str(exc))
+        return 2
+    print("dashboard key saved to .env — `cli ui` now requires it, including for anyone "
+          "already signed into a browser session before this ran.")
     return 0
 
 
@@ -697,8 +717,30 @@ def cmd_scheduler_serve(args) -> int:
     return 0
 
 
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
 def cmd_ui(args) -> int:
+    from . import auth as auth_module
     from . import dashboard as dashboard_module
+
+    if args.host not in _LOOPBACK_HOSTS and not auth_module.configured():
+        # A LOUD WARNING, NOT A REFUSAL. Binding to something other than
+        # loopback is exactly how you'd reach this from a container, a VM,
+        # or a real deployment someone's website talks to — all legitimate
+        # — so this doesn't block it. But `127.0.0.1` was the entire
+        # security model every route in `dashboard.py` was written against;
+        # leaving that boundary without setting `MODELCICD_API_KEY` means
+        # the eleven POST routes that approve models, spend money, and
+        # write into a connected app's source are open to anyone who
+        # reaches this host at all.
+        print(f"\n{'!' * 70}")
+        print(f"WARNING: binding to {args.host}, not localhost, with no dashboard key set.")
+        print("Every page here — including approve/reject/run/scan-repo/apply-code-patch —")
+        print("is reachable by anyone who can reach this host. Set one first:")
+        print("    python -m modelcicd.cli set-dashboard-key")
+        print(f"{'!' * 70}\n")
+
     dashboard_module.serve(host=args.host, port=args.port)
     return 0
 
@@ -719,7 +761,12 @@ def build_parser() -> argparse.ArgumentParser:
     sk.add_argument("--provider", required=True, choices=["openrouter", "groq", "fireworks"])
     sk.add_argument("--key", default=None, help="omit to be prompted (input hidden)")
 
-    sub.add_parser("keys", help="which platforms have a key configured")
+    sub.add_parser("keys", help="which platforms (and the dashboard itself) have a key configured")
+
+    sdk = sub.add_parser("set-dashboard-key",
+                         help="save the key that protects `ui` once it's reachable by more "
+                              "than localhost")
+    sdk.add_argument("--key", default=None, help="omit to be prompted (input hidden)")
 
     proj = sub.add_parser("project", help="connect / list applications")
     proj_sub = proj.add_subparsers(dest="project_command", required=True)
@@ -860,7 +907,8 @@ def main() -> int:
     if args.command == "scheduler":
         return {"run-due": cmd_scheduler_run_due, "serve": cmd_scheduler_serve}[args.scheduler_command](args)
     return {"init": cmd_init, "onboarding": cmd_onboarding, "set-key": cmd_set_key,
-            "keys": cmd_keys, "catalogue": cmd_catalogue,
+            "keys": cmd_keys, "set-dashboard-key": cmd_set_dashboard_key,
+            "catalogue": cmd_catalogue,
             "wizard": cmd_wizard, "scan-repo": cmd_scan_repo, "shortlist": cmd_shortlist,
             "run": cmd_run, "status": cmd_status, "approve": cmd_approve,
             "reject": cmd_reject, "pending": cmd_pending,

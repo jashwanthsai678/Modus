@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Sign in — Model CICD{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Sign in</h1>
+  <p class="sub">This dashboard is protected — <code>MODELCICD_API_KEY</code> is set. Paste it
+    below once; the browser stays signed in after that.</p>
+</div>
+
+{% if error %}
+<div class="card errors">{{ error }}</div>
+{% endif %}
+
+<div class="card" style="max-width: 420px;">
+  <form method="post">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label for="key">Dashboard key</label>
+    <input id="key" name="key" type="password" autofocus autocomplete="current-password"
+           placeholder="paste MODELCICD_API_KEY">
+    <button type="submit" class="btn btn-primary" style="margin-top: 14px;">Sign in</button>
+  </form>
+</div>
+
+<p class="muted">A server calling <code>/api/resolve/...</code> directly doesn't need this page —
+  send <code>Authorization: Bearer &lt;key&gt;</code> on the request instead.</p>
+{% endblock %}

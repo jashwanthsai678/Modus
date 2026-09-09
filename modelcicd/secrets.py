@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from . import auth as auth_module
 from . import catalogue as catalogue_module
 
 DEFAULT_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
@@ -22,27 +23,46 @@ def _key_env(provider: str) -> str:
     return spec["key_env"]
 
 
-def set_key(provider: str, value: str, *, env_path: Optional[Path] = None) -> None:
-    """Writes `value` for `provider`'s key into `.env` — replacing an
-    existing line for that variable if one exists, appending one if not,
-    and leaving every other line untouched. Also updates `os.environ`
-    immediately, so a dashboard process already running picks it up on its
-    very next request without needing a restart."""
-    key_env = _key_env(provider)
+def _write_env_var(name: str, value: str, *, env_path: Optional[Path] = None) -> None:
+    """THE ACTUAL one place this project writes to `.env` — `set_key` and
+    `set_dashboard_key` are both thin callers of this, so there is exactly
+    one implementation of "replace this line, or append it, and leave every
+    other line untouched" rather than two copies that could drift. Also
+    updates `os.environ` immediately, so a dashboard process already
+    running picks up the change on its very next request without needing a
+    restart — true for a provider key, and just as true for the dashboard's
+    own auth key."""
     path = Path(env_path or DEFAULT_ENV_PATH)
     lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
 
-    prefix = f"{key_env}="
+    prefix = f"{name}="
     for i, line in enumerate(lines):
         if line.startswith(prefix):
-            lines[i] = f"{key_env}={value}"
+            lines[i] = f"{name}={value}"
             break
     else:
-        lines.append(f"{key_env}={value}")
+        lines.append(f"{name}={value}")
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    os.environ[key_env] = value
+    os.environ[name] = value
+
+
+def set_key(provider: str, value: str, *, env_path: Optional[Path] = None) -> None:
+    """Writes `value` for `provider`'s key into `.env`."""
+    _write_env_var(_key_env(provider), value, env_path=env_path)
+
+
+def set_dashboard_key(value: str, *, env_path: Optional[Path] = None) -> None:
+    """Writes `MODELCICD_API_KEY` into `.env` — the one shared secret that
+    gates the dashboard once it's reachable by more than just you (see
+    `auth.py`). Setting this is what turns auth ON; there is no separate
+    switch."""
+    if not value.strip():
+        raise ValueError("a dashboard key can't be empty — that would set MODELCICD_API_KEY "
+                         "to a blank string, which auth.configured() treats as unset, silently "
+                         "leaving the dashboard open.")
+    _write_env_var(auth_module.API_KEY_ENV, value.strip(), env_path=env_path)
 
 
 def status() -> dict:

@@ -22,6 +22,13 @@ a candidate" — just two URLs that can reach it.
 LANGUAGES. `resolver.resolve()` is Python-only; these expose exactly that
 answer over HTTP, GET-only, read-only — see the section above `_roots` for
 why that boundary is load-bearing, not incidental.
+
+EVERY ROUTE IS OPEN BY DEFAULT — THAT'S THE LOCALHOST-ONLY ASSUMPTION THIS
+PROJECT HAS ALWAYS MADE, MADE EXPLICIT. Set `MODELCICD_API_KEY` (see
+`auth.py`) and every route here — the API and every dashboard page, POST
+routes included — starts requiring it. Leave it unset and nothing about
+this file's behavior changes, including every existing test that calls
+`create_app()` with no key configured.
 """
 import json
 from pathlib import Path
@@ -29,6 +36,7 @@ from typing import Optional
 
 from flask import Flask, abort, redirect, render_template, request, url_for
 
+from . import auth as auth_module
 from . import code_patch as code_patch_module
 from . import config as config_module
 from . import health as health_module
@@ -210,6 +218,85 @@ def create_app() -> Flask:
         return url_for(endpoint, project=project, **kwargs) if project \
             else url_for(endpoint, **kwargs)
 
+    # ── Auth gate — off unless MODELCICD_API_KEY is set ─────────────────────
+    #
+    # RUNS BEFORE EVERY ROUTE BELOW, so this is the one place "is this
+    # request allowed" is decided — not a decorator someone has to remember
+    # to add to each new route, which is exactly the kind of thing that gets
+    # forgotten on route number twelve. See `auth.py` for the reasoning
+    # behind the shape of this.
+
+    # ONE YEAR, roughly — a browser signed into their own self-hosted
+    # dashboard shouldn't need to re-paste the key weekly. Rotating the key
+    # (via `/keys` or `set-dashboard-key`) invalidates every existing cookie
+    # immediately regardless of this duration — see `auth.session_token`.
+    _COOKIE_MAX_AGE = 365 * 24 * 3600
+
+    def _signed_in() -> bool:
+        return auth_module.session_cookie_valid(request.cookies.get(auth_module.COOKIE_NAME))
+
+    def _safe_next(raw: Optional[str]) -> str:
+        # A same-site relative path only — never redirect wherever a crafted
+        # `next=` value points. `//evil.example` has no scheme and LOOKS
+        # relative, but a browser treats a leading `//` as protocol-relative
+        # to another host entirely, so that's rejected too, not just an
+        # absolute `http(s)://` URL.
+        if raw and raw.startswith("/") and not raw.startswith("//"):
+            return raw
+        return url_for("index")
+
+    @app.before_request
+    def _require_auth():
+        if not auth_module.configured():
+            return None                                  # legacy: auth is off
+        if request.endpoint in ("login", "static"):
+            return None
+
+        token = auth_module.bearer_token(request.headers.get("Authorization"))
+        if token and auth_module.check(token):
+            return None
+        if _signed_in():
+            return None
+
+        # An API caller gets a JSON body it can branch on; a browser gets
+        # sent to the one page that doesn't require being already logged in.
+        if request.path.startswith("/api/"):
+            return {"error": "unauthorized — send Authorization: Bearer <key>"}, 401
+        # `full_path` always trails with "?" even with no query string —
+        # stripped so a plain page doesn't round-trip through login with a
+        # stray empty query string tacked on.
+        return redirect(url_for("login", next=request.full_path.rstrip("?")))
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        if not auth_module.configured():
+            # Nothing to log into — there's no key to check a guess against.
+            return redirect(url_for("index"))
+        error = None
+        if request.method == "POST":
+            if auth_module.check(request.form.get("key")):
+                resp = redirect(_safe_next(request.form.get("next")))
+                resp.set_cookie(auth_module.COOKIE_NAME, auth_module.session_token(),
+                               max_age=_COOKIE_MAX_AGE, httponly=True, samesite="Lax")
+                return resp
+            error = "that key doesn't match."
+        return render_template("login.html", error=error,
+                              next=request.args.get("next", ""))
+
+    @app.route("/logout", methods=["POST"])
+    def logout():
+        resp = redirect(url_for("login"))
+        resp.delete_cookie(auth_module.COOKIE_NAME)
+        return resp
+
+    @app.context_processor
+    def _auth_status():
+        # So `base.html` can show a Sign out link only when there is
+        # something meaningful to sign out OF — auth configured, and this
+        # browser actually holds a valid cookie (not a bearer-token caller,
+        # which has no cookie to clear).
+        return {"auth_enabled": auth_module.configured(), "signed_in": _signed_in()}
+
     # ── Home: title, the "new project" CTA, existing projects, the pitch ────
 
     @app.route("/")
@@ -249,11 +336,11 @@ def create_app() -> Flask:
             return {"path": "", "error": str(exc)[:200]}
 
     @app.route("/keys")
-
-    @app.route("/keys")
     def keys_form():
         return render_template("keys.html", key_status=secrets_module.status(),
-                              saved=request.args.get("saved"))
+                              dashboard_key_set=auth_module.configured(),
+                              saved=request.args.get("saved"),
+                              dashboard_error=request.args.get("dashboard_error"))
 
     @app.route("/keys", methods=["POST"])
     def keys_save():
@@ -263,7 +350,25 @@ def create_app() -> Flask:
             if value:
                 secrets_module.set_key(provider, value)
                 saved.append(provider)
-        return redirect(url_for("keys_form", saved=",".join(saved)), code=303)
+
+        dashboard_value = (request.form.get("dashboard_key") or "").strip()
+        resp = redirect(url_for("keys_form"), code=303)  # target filled in below
+        if dashboard_value:
+            try:
+                secrets_module.set_dashboard_key(dashboard_value)
+            except ValueError as exc:
+                return redirect(url_for("keys_form", dashboard_error=str(exc)), code=303)
+            saved.append("dashboard")
+            # SETTING THIS THE FIRST TIME MUST NOT LOCK OUT THE BROWSER THAT
+            # JUST DID IT. `session_token()` reads `MODELCICD_API_KEY` fresh
+            # from `os.environ`, which `set_dashboard_key` just updated —
+            # so the cookie set on THIS response already matches what the
+            # very next request will check. Nothing to get the ordering of.
+            resp.set_cookie(auth_module.COOKIE_NAME, auth_module.session_token(),
+                           max_age=_COOKIE_MAX_AGE, httponly=True, samesite="Lax")
+
+        resp.headers["Location"] = url_for("keys_form", saved=",".join(saved))
+        return resp
 
     @app.route("/unscoped")
     def unscoped_use_cases():
