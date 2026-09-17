@@ -766,12 +766,29 @@ def create_app() -> Flask:
         judge_model = proj.defaults.get("judgeModel") or config_module.DEFAULT_JUDGE_MODEL
         generation_model = proj.defaults.get("generationModel") or judge_model
         existing = {p.stem for p in project_module.list_use_cases(slug)}
+        # ONLY DRAFTED WHEN THE PROJECT HAS NO RUBRIC OF ITS OWN. A project's
+        # explicit rubric — set once by a person on Project Defaults — is
+        # never second-guessed by a per-candidate guess; see `generate_rubric`
+        # in `code_scan.py` for the reasoning behind drafting one at all.
+        rubric_missing = not (proj.defaults.get("rubric") or [])
 
         async def draft(candidate: dict) -> dict:
-            cases = await code_scan_module.generate_test_cases(
-                candidate.get("prompt") or "", input_structure=candidate.get("inputStructure"),
-                output_structure=candidate.get("outputStructure"), model=generation_model)
-            return {"candidate": candidate, "cases": cases}
+            prompt = candidate.get("prompt") or ""
+            in_s, out_s = candidate.get("inputStructure"), candidate.get("outputStructure")
+            if rubric_missing:
+                cases, rubric = await asyncio.gather(
+                    code_scan_module.generate_test_cases(
+                        prompt, input_structure=in_s, output_structure=out_s,
+                        model=generation_model),
+                    code_scan_module.generate_rubric(
+                        prompt, input_structure=in_s, output_structure=out_s,
+                        model=generation_model))
+            else:
+                cases = await code_scan_module.generate_test_cases(
+                    prompt, input_structure=in_s, output_structure=out_s,
+                    model=generation_model)
+                rubric = None                  # None means "keep the project's own"
+            return {"candidate": candidate, "cases": cases, "rubric": rubric}
 
         async def draft_all() -> list:
             return await asyncio.gather(*(draft(c) for c in candidates))
@@ -779,6 +796,7 @@ def create_app() -> Flask:
         drafts = asyncio.run(draft_all())
 
         fields_list = []
+        rubric_drafted_list = []
         used_names = set(existing)
         for d in drafts:
             candidate = d["candidate"]
@@ -807,14 +825,21 @@ def create_app() -> Flask:
             if candidate.get("model"):
                 f.code_file = code_file or None
                 f.code_current_model = candidate.get("model")
+            # `d["rubric"]` is None when the project already had one (kept
+            # untouched, above) — only a drafted list (possibly empty, on a
+            # generation failure) replaces it.
+            if d["rubric"] is not None:
+                f.rubric = d["rubric"]
             fields_list.append(f)
+            rubric_drafted_list.append(rubric_missing)
 
         return render_template("bulk_create_review.html", project=proj,
                               fields_list=fields_list, generation_model=generation_model,
                               errors_list=[[] for _ in fields_list],
                               skipped_list=[False for _ in fields_list],
                               blocked_count=0,
-                              rubric_missing=not (proj.defaults.get("rubric") or []))
+                              rubric_missing=rubric_missing,
+                              rubric_drafted_list=rubric_drafted_list)
 
     @app.route("/projects/<slug>/scan/bulk-create/save", methods=["POST"])
     def bulk_create_save(slug):
@@ -852,9 +877,25 @@ def create_app() -> Flask:
                 f.code_file, f.code_current_model = code_file, code_model
             f.input_structure = request.form.get(f"{prefix}input_structure", "").strip() or None
             f.output_structure = request.form.get(f"{prefix}output_structure", "").strip() or None
+            # RUBRIC ROWS, READ FROM THE FORM — the drafted (or project-
+            # inherited) rubric shown on the review page is only ever a
+            # STARTING point; what actually saves is whatever the person
+            # left in these fields, edits included. Same shape as the
+            # test-case rows just above.
+            c_ids = request.form.getlist(f"{prefix}rubric_id")
+            c_descs = request.form.getlist(f"{prefix}rubric_description")
+            c_weights = request.form.getlist(f"{prefix}rubric_weight")
+            f.rubric = []
+            for j, c_id in enumerate(c_ids):
+                c_desc = c_descs[j] if j < len(c_descs) else ""
+                c_weight = c_weights[j] if j < len(c_weights) else ""
+                if c_id.strip() and c_desc.strip():
+                    f.rubric.append({"id": c_id.strip(), "description": c_desc,
+                                     "weight": float(c_weight) if c_weight else 1.0})
             skipped = request.form.get(f"{prefix}skip") == "on"
             entries.append({"fields": f, "skipped": skipped,
-                            "errors": [] if skipped else wizard_module.validate(f)})
+                            "errors": [] if skipped else wizard_module.validate(f),
+                            "rubric_drafted": request.form.get(f"{prefix}rubric_drafted") == "on"})
 
         # Name collisions are a validation failure too, not an overwrite. A
         # drafted name matching a feature that already exists would silently

@@ -4,10 +4,16 @@
 <p class="crumb"><a class="link" href="{{ url_for('project_detail', slug=project.slug) }}">&larr; {{ project.name }}</a></p>
 <div class="page-head">
   <h1>Review before saving</h1>
-  <p class="sub">Nothing is saved yet. Every name, prompt, and test case below is a draft — edit
-    anything. A feature saves unless you tick <strong>skip</strong> on it. All of them share the
-    project's rubric, price ceiling, and judge from
-    <a class="link" href="{{ url_for('project_defaults', slug=project.slug) }}">Project defaults</a>.</p>
+  <p class="sub">Nothing is saved yet. Every name, prompt, test case, and rubric below is a draft
+    — edit anything. A feature saves unless you tick <strong>skip</strong> on it.
+    {% if rubric_missing %}
+    This project has no shared rubric, so each feature below got its own, drafted from its
+    detected prompt — read it like anything else here before trusting it.
+    {% else %}
+    All of them share the project's rubric, price ceiling, and judge from
+    <a class="link" href="{{ url_for('project_defaults', slug=project.slug) }}">Project defaults</a>.
+    {% endif %}
+  </p>
 </div>
 
 {% if blocked_count %}
@@ -20,11 +26,6 @@
     {{ blocked_count }} feature{{ 's' if blocked_count != 1 else '' }} below can't be created yet —
     each one's reason is on its own card. Fix them, or tick <strong>skip</strong> on the ones you
     don't want, then submit again. Your edits are preserved.</p>
-  {% if rubric_missing %}
-  <p style="margin:var(--sp-3) 0 0;">This project has no rubric, so <em>no</em> feature here can be
-    saved until you set one — <a class="link" href="{{ url_for('project_defaults', slug=project.slug) }}">set the project rubric</a>,
-    then come back to this page and submit again.</p>
-  {% endif %}
 </div>
 {% endif %}
 
@@ -33,7 +34,13 @@
   {% for f in fields_list %}
   {% set outer_i = loop.index0 %}
   {% set errors = errors_list[outer_i] if errors_list else [] %}
+  {% set drafted = rubric_drafted_list[outer_i] if rubric_drafted_list else false %}
   <div class="card">
+    {# Carries the "was this rubric drafted or inherited" fact through a
+       validation-failure re-render — the only place it needs to survive,
+       since it's purely informational (which label the rubric section
+       below shows), never read by anything that decides what gets saved. #}
+    {% if drafted %}<input type="hidden" name="f{{ outer_i }}_rubric_drafted" value="on">{% endif %}
     <div class="checkline" style="float: right;">
       <input id="f{{ outer_i }}_skip" name="f{{ outer_i }}_skip" type="checkbox"
              {{ 'checked' if skipped_list and skipped_list[outer_i] else '' }}>
@@ -102,6 +109,44 @@
           <label>reference <span class="hint">(drafted, not guaranteed correct — check it)</span></label>
           <input name="f{{ outer_i }}_tc_reference" type="text"
                  value="{{ tc.reference if tc and tc.reference else '' }}">
+        </div>
+      </div>
+    </fieldset>
+    {% endfor %}
+
+    <h2 style="margin-top: 18px;">Rubric
+      {% if drafted %}
+      <span class="badge tie">drafted by {{ generation_model }} — check before saving</span>
+      {% else %}
+      <span class="hint">from the project's shared defaults — editing here only affects this feature</span>
+      {% endif %}
+    </h2>
+    {% if not f.rubric %}
+    <p class="muted">Nothing here — add at least one criterion below. A feature needs at least
+      one for the judge to score against, so this won't save without one (tick
+      <strong>skip</strong> if you'd rather drop it).</p>
+    {% endif %}
+    {# +1 spare beyond whatever's drafted or inherited, so there's always
+       room to add one more criterion without it being invisible. #}
+    {% set rubric_rows = [4, f.rubric|length + 1]|max %}
+    {% for i in range(rubric_rows) %}
+    {% set c = f.rubric[i] if i < f.rubric|length else None %}
+    <fieldset>
+      <legend>criterion {{ i + 1 }}</legend>
+      <div class="row3">
+        <div>
+          <label>id</label>
+          <input name="f{{ outer_i }}_rubric_id" type="text" value="{{ c.id if c else '' }}">
+        </div>
+        <div>
+          <label>description</label>
+          <input name="f{{ outer_i }}_rubric_description" type="text"
+                 value="{{ c.description if c else '' }}">
+        </div>
+        <div>
+          <label>weight</label>
+          <input name="f{{ outer_i }}_rubric_weight" type="number" step="0.1"
+                 value="{{ c.weight if c else '1.0' }}">
         </div>
       </div>
     </fieldset>

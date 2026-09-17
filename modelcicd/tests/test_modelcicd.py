@@ -1080,6 +1080,68 @@ def test_generate_test_cases_tolerates_a_model_returning_a_list_instead_of_a_str
          cases and cases[0]["input"] == "This is unacceptable! Fix it now.", f"{cases}")
 
 
+# ── rubric generation: the one place this project has always said a human
+#    has to show up — drafted here, never saved without review ─────────────
+
+def test_generate_rubric_returns_drafts_and_falls_back_to_empty_on_failure() -> None:
+    import asyncio
+
+    async def fake_call_json(prompt, *, model, label, **kwargs):
+        return {"criteria": [
+            {"id": "correctness", "description": "is it right", "weight": 1.5},
+            {"id": "", "description": "", "weight": 1.0},   # blank description -> dropped
+        ]}
+
+    original = code_scan.client_module.call_json
+    code_scan.client_module.call_json = fake_call_json
+    try:
+        criteria = asyncio.run(code_scan.generate_rubric(
+            "You are a support agent.", input_structure="a string", model="x", count=2))
+    finally:
+        code_scan.client_module.call_json = original
+    check("kept the real criterion", len(criteria) == 1, f"{criteria}")
+    check("carries id/description/weight",
+          criteria[0]["id"] == "correctness" and criteria[0]["description"] == "is it right"
+          and criteria[0]["weight"] == 1.5, f"{criteria}")
+
+    async def fake_fail(prompt, *, model, label, **kwargs):
+        raise RuntimeError("boom")
+
+    code_scan.client_module.call_json = fake_fail
+    try:
+        criteria = asyncio.run(code_scan.generate_rubric("x", model="x"))
+    finally:
+        code_scan.client_module.call_json = original
+    check("falls back to empty on failure, not an exception", criteria == [])
+
+
+def test_generate_rubric_clamps_a_nonsense_weight_instead_of_trusting_it() -> None:
+    """A model returning an absurd or negative weight must not be able to
+    make one criterion swamp (or erase) every other in the blended score —
+    same "unknown/nonsense never resolved favorably" rule guardrails and
+    assertions already follow."""
+    import asyncio
+
+    async def fake_call_json(prompt, *, model, label, **kwargs):
+        return {"criteria": [
+            {"id": "a", "description": "d", "weight": 500},
+            {"id": "b", "description": "d", "weight": -3},
+            {"id": "c", "description": "d", "weight": "not a number"},
+        ]}
+
+    original = code_scan.client_module.call_json
+    code_scan.client_module.call_json = fake_call_json
+    try:
+        criteria = asyncio.run(code_scan.generate_rubric("x", model="x"))
+    finally:
+        code_scan.client_module.call_json = original
+    weights = {c["id"]: c["weight"] for c in criteria}
+    check("an absurdly high weight is clamped", weights["a"] <= 5.0, f"{weights}")
+    check("a negative weight is clamped to the floor", weights["b"] >= 0.1, f"{weights}")
+    check("a non-numeric weight falls back to 1.0, not dropped entirely",
+          weights["c"] == 1.0, f"{weights}")
+
+
 def test_suggest_name_from_file_path() -> None:
     check("dir + stem", code_scan.suggest_name("support_bot/bot.py") == "support_bot_bot")
     check("sanitized", code_scan.suggest_name("agent/router.py") == "agent_router")
@@ -3577,16 +3639,146 @@ def test_api_routes_only_answer_get() -> None:
 # bit a real person twice in one session before it was found. No network
 # here: this route only validates form data and writes yaml.
 
-def _bulk_form(count: int, **overrides) -> dict:
-    """A bulk-create submission with `count` valid features, f0..fN."""
+_DEFAULT_TEST_RUBRIC = [{"id": "accuracy", "description": "is it right", "weight": "1.0"}]
+
+
+def _bulk_form(count: int, *, rubric=_DEFAULT_TEST_RUBRIC, **overrides) -> dict:
+    """A bulk-create submission with `count` valid features, f0..fN.
+
+    RUBRIC ROWS ARE PART OF A REAL SUBMISSION NOW, not silently inherited —
+    `bulk_create_review.html` always renders them (drafted, or copied from
+    the project's own defaults for a person to edit), so a real POST from
+    that page always carries `f{i}_rubric_id` etc. Defaults to one
+    criterion per feature, matching what most of these tests' projects are
+    given via `_bulk_client`; pass `rubric=[]` for the one test that
+    specifically wants to submit none at all."""
     form = {"feature_count": str(count)}
     for i in range(count):
         form.update({f"f{i}_name": f"feature_{i}",
                      f"f{i}_system_prompt": "You answer questions.",
                      f"f{i}_tc_id": "tc1", f"f{i}_tc_input": "what is 2+2?",
-                     f"f{i}_tc_reference": "4"})
+                     f"f{i}_tc_reference": "4",
+                     f"f{i}_rubric_id": [c["id"] for c in rubric],
+                     f"f{i}_rubric_description": [c["description"] for c in rubric],
+                     f"f{i}_rubric_weight": [str(c.get("weight", "1.0")) for c in rubric]})
     form.update(overrides)
     return form
+
+
+def _scan_client(rubric: list, candidates: list):
+    """A test client plus a project whose defaults carry `rubric` and whose
+    scan results carry `candidates` — enough to drive `bulk_create_generate`
+    itself, not just `bulk_create_save` directly."""
+    from modelcicd import dashboard
+    tmp = Path(tempfile.mkdtemp())
+    original = project.DEFAULT_DIR
+    project.DEFAULT_DIR = tmp / "projects"
+    project.create("Scan Test", slug="scan-test", notify_email="t@example.com")
+    project.set_defaults("scan-test", {"rubric": rubric})
+    scan_dir = project.DEFAULT_DIR / "scan-test"
+    scan_dir.mkdir(parents=True, exist_ok=True)
+    (scan_dir / "scan_results.json").write_text(
+        json.dumps({"candidates": candidates, "errors": []}), encoding="utf-8")
+    app = dashboard.create_app()
+    app.config["TESTING"] = True
+    return app.test_client(), original
+
+
+_A_CANDIDATE = [{"file": "app/router.py", "line": 3, "model": "vendor/old",
+                "prompt": "Route this ticket.", "confidence": "high",
+                "inputStructure": None, "outputStructure": None}]
+
+
+def test_bulk_create_generate_drafts_a_rubric_when_the_project_has_none() -> None:
+    import asyncio
+
+    async def fake_call_json(prompt, *, model, label, **kwargs):
+        if label == "generate-rubric":
+            return {"criteria": [{"id": "on_topic", "description": "stays on topic",
+                                  "weight": 1.0}]}
+        return {"cases": []}
+
+    client_, original = _scan_client([], _A_CANDIDATE)
+    original_call = code_scan.client_module.call_json
+    code_scan.client_module.call_json = fake_call_json
+    try:
+        r = client_.post("/projects/scan-test/scan/bulk-create")
+        body = r.get_data(as_text=True)
+        check("200", r.status_code == 200, f"{r.status_code}")
+        check("the drafted criterion appears, editable", 'value="on_topic"' in body, body[:400])
+        check("labelled as drafted, not silently presented as fact",
+              "drafted by" in body, body[:2000])
+    finally:
+        code_scan.client_module.call_json = original_call
+        project.DEFAULT_DIR = original
+
+
+def test_bulk_create_generate_never_drafts_a_rubric_when_the_project_already_has_one() -> None:
+    """THE COST GUARANTEE. A project's explicit rubric — set once, by a
+    person, on Project Defaults — must never be silently replaced by a
+    guess, and drafting one anyway would spend a real model call for
+    something that gets thrown away. Checked by asserting the call simply
+    never happens, not just that its result is unused."""
+    import asyncio
+    calls = []
+
+    async def fake_call_json(prompt, *, model, label, **kwargs):
+        calls.append(label)
+        return {"cases": []}
+
+    client_, original = _scan_client(
+        [{"id": "accuracy", "description": "is it right", "weight": 1.0}], _A_CANDIDATE)
+    original_call = code_scan.client_module.call_json
+    code_scan.client_module.call_json = fake_call_json
+    try:
+        r = client_.post("/projects/scan-test/scan/bulk-create")
+        body = r.get_data(as_text=True)
+        check("generate-rubric was never called", "generate-rubric" not in calls, f"{calls}")
+        check("the project's own rubric is shown instead",
+              'value="accuracy"' in body, body[:400])
+        check("labelled as inherited, not drafted",
+              "from the project&#39;s shared defaults" in body
+              or "from the project's shared defaults" in body, body[:2000])
+    finally:
+        code_scan.client_module.call_json = original_call
+        project.DEFAULT_DIR = original
+
+
+def test_bulk_create_save_round_trips_a_drafted_rubric() -> None:
+    """End to end: a project with no rubric, a drafted one shown on review,
+    and what actually gets saved when the person submits it unchanged."""
+    import asyncio
+
+    async def fake_call_json(prompt, *, model, label, **kwargs):
+        if label == "generate-rubric":
+            return {"criteria": [{"id": "on_topic", "description": "stays on topic",
+                                  "weight": 1.0}]}
+        return {"cases": [{"id": "tc1", "input": "hello", "reference": None}]}
+
+    client_, original = _scan_client([], _A_CANDIDATE)
+    original_call = code_scan.client_module.call_json
+    code_scan.client_module.call_json = fake_call_json
+    try:
+        client_.post("/projects/scan-test/scan/bulk-create")  # drafts, not saved yet
+        # Submit the review form back exactly as drafted — one feature,
+        # its drafted test case and drafted rubric, untouched.
+        form = {
+            "feature_count": "1",
+            "f0_name": "router", "f0_system_prompt": "Route this ticket.",
+            "f0_tc_id": "tc1", "f0_tc_input": "hello", "f0_tc_reference": "",
+            "f0_rubric_id": "on_topic", "f0_rubric_description": "stays on topic",
+            "f0_rubric_weight": "1.0",
+        }
+        r = client_.post("/projects/scan-test/scan/bulk-create/save", data=form,
+                         follow_redirects=False)
+        check("saved", r.status_code == 303, f"{r.status_code}")
+        saved = config.load(project.use_cases_dir("scan-test") / "router.yaml")
+        check("the drafted rubric is what actually saved",
+              [(c.id, c.description) for c in saved.rubric] == [("on_topic", "stays on topic")],
+              f"{saved.rubric}")
+    finally:
+        code_scan.client_module.call_json = original_call
+        project.DEFAULT_DIR = original
 
 
 def _bulk_client(rubric: list):
@@ -3604,9 +3796,13 @@ def _bulk_client(rubric: list):
 
 
 def test_bulk_create_refuses_and_explains_when_the_rubric_is_empty() -> None:
+    # No rubric anywhere — neither the project's own defaults nor the form
+    # submission carries one, the way a real page would look if drafting
+    # itself had also failed to produce anything.
     client_, tmp, original = _bulk_client([])
     try:
-        r = client_.post("/projects/bulk-test/scan/bulk-create/save", data=_bulk_form(1))
+        r = client_.post("/projects/bulk-test/scan/bulk-create/save",
+                         data=_bulk_form(1, rubric=[]))
         body = r.get_data(as_text=True)
         check("empty rubric is refused, not redirected", r.status_code == 400,
               f"got {r.status_code}")

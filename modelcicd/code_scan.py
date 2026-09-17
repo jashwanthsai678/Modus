@@ -408,6 +408,88 @@ async def generate_test_cases(prompt: str, *, input_structure: Optional[str] = N
     return out
 
 
+# ── Rubric generation: draft, never final — the SAME rule applies harder ────
+#
+# THE RUBRIC IS THE ONE PLACE THIS PROJECT HAS ALWAYS SAID A HUMAN HAS TO
+# SHOW UP. Test-case inputs are safe to automate; a rubric is a claim about
+# what "good" means for this specific feature, in whoever owns it's own
+# language — the central design decision behind `config.Criterion`, stated
+# there before this function ever existed. Drafting one here does not
+# relax that: this is a STARTING POINT, shown on the review page, editable,
+# never written by itself. What changes is who has to type the first draft
+# — a model guessing at plausible criteria from the prompt, instead of a
+# blank form — not who has final say over what gets saved.
+#
+# ONLY EVER CALLED WHEN THE PROJECT HAS NO SHARED RUBRIC OF ITS OWN. A
+# project's explicit rubric — set once by a person on Project Defaults — is
+# never second-guessed or replaced by a draft; see `dashboard.py`'s
+# `bulk_create_generate`, which only reaches for this when
+# `proj.defaults["rubric"]` is empty.
+
+_RUBRIC_PROMPT = """You are drafting a scoring rubric for an AI feature, so its candidate
+models can be judged against criteria SPECIFIC to what this feature actually does — never
+a generic "is this a good response?" rubric, which cannot tell a support bot's reply apart
+from a code reviewer's comment.
+
+THE FEATURE'S SYSTEM PROMPT (what every candidate is asked):
+{prompt}
+
+WHAT IT SENDS AND EXPECTS BACK, FOR CONTEXT:
+  input: {input_structure}
+  output: {output_structure}
+
+Write {count} criteria a human who owns this feature would actually judge an answer by —
+each one something a real answer could clearly pass or fail, in THIS feature's own terms.
+For each: a short snake_case id, a one-sentence description of what "good" means for this
+feature on that criterion, and a weight from 0.5 to 2.0 reflecting how much it should count
+relative to the others — whatever this feature must get right above all else should weigh
+more than a nice-to-have.
+
+Return ONLY valid JSON, no markdown fences:
+{{"criteria": [{{"id": "short_snake_case_id", "description": "...", "weight": 1.0}}]}}
+"""
+
+
+async def generate_rubric(prompt: str, *, input_structure: Optional[str] = None,
+                          output_structure: Optional[str] = None,
+                          model: str, count: int = 3) -> list:
+    """Drafts `count` {id, description, weight} rubric criteria from a
+    feature's system prompt — a STARTING POINT shown for review, never
+    saved by itself. Returns [] on any failure, the same fallback
+    `generate_test_cases` uses: the caller degrades to an empty rubric a
+    person fills in by hand, not a crash."""
+    try:
+        data = await client_module.call_json(
+            _RUBRIC_PROMPT.format(
+                prompt=prompt,
+                input_structure=input_structure or "not determined — infer from the prompt",
+                output_structure=output_structure or "not determined — infer from the prompt",
+                count=count),
+            model=model, label="generate-rubric", required=("criteria",),
+            temperature=0.6, max_tokens=1200)
+    except Exception:                                   # noqa: BLE001
+        return []
+    out = []
+    for i, c in enumerate(data.get("criteria") or []):
+        if not isinstance(c, dict):
+            continue
+        cid = _as_text(c.get("id")) or f"criterion_{i + 1}"
+        desc = _as_text(c.get("description"))
+        if not desc:
+            continue
+        try:
+            weight = float(c.get("weight", 1.0))
+        except (TypeError, ValueError):
+            weight = 1.0
+        # UNKNOWN/NONSENSE WEIGHTS NEVER SILENTLY BECOME EXTREME ONES — a
+        # model returning "weight": 500 or a negative number shouldn't be
+        # able to make one criterion swamp every other in the blended
+        # score. Clamped to the same generous range the prompt asked for.
+        weight = max(0.1, min(5.0, weight))
+        out.append({"id": cid, "description": desc, "weight": round(weight, 2)})
+    return out
+
+
 def _as_text(value) -> str:
     """A model asked for a JSON string field doesn't always give one — a
     free model in particular may return a list of fragments instead of one
