@@ -1,4 +1,4 @@
-# Contributing to Model CICD
+# Contributing to Modus
 
 Thanks for looking at this. This doc covers how to get set up, how to run
 things, and the conventions this codebase actually follows in practice — so
@@ -7,8 +7,8 @@ you can match them instead of guessing from reading everything first.
 ## Getting set up
 
 ```
-git clone https://github.com/jashwanthsai678/ModelVigil.git
-cd ModelVigil
+git clone https://github.com/jashwanthsai678/Modus.git
+cd Modus
 python -m venv .venv
 .venv\Scripts\activate        (Windows)   /   source .venv/bin/activate   (macOS/Linux)
 pip install -e .

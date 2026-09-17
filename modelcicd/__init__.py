@@ -1,4 +1,4 @@
-"""Model CICD — continuous model discovery, sandboxing and human-approved
+"""Modus — continuous model discovery, sandboxing and human-approved
 promotion for one specific place an LLM is called in your application.
 
     from modelcicd.resolver import resolve

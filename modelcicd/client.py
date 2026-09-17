@@ -147,7 +147,7 @@ async def call_json(prompt: str, *, model: str, label: str,
                     base_url,
                     headers={"Authorization": f"Bearer {api_key}",
                             "Content-Type": "application/json",
-                            "HTTP-Referer": "https://github.com/", "X-Title": "Model CICD"},
+                            "HTTP-Referer": "https://github.com/", "X-Title": "Modus"},
                     json={"model": model, "messages": messages,
                          "temperature": temperature, "max_tokens": max_tokens,
                          "response_format": {"type": "json_object"}})

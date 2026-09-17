@@ -1,4 +1,4 @@
-"""Model CICD — the whole loop, from the command line.
+"""Modus — the whole loop, from the command line.
 
     python -m modelcicd.cli init                              # write a template
     python -m modelcicd.cli project create --name "My App"     # connect an application
