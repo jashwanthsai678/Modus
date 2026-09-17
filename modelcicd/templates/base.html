@@ -21,39 +21,38 @@
        read CSS custom properties, and browser tab chrome is unpredictably
        light or dark regardless of the page's own theme, so this is opaque
        and self-contained rather than trying to match either. -->
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 22'%3E%3Crect x='1.5' y='12.5' width='4.2' height='8' rx='1.2' fill='%23948da3'/%3E%3Crect x='7.4' y='8' width='4.2' height='12.5' rx='1.2' fill='%238f7fff'/%3E%3Crect x='13.3' y='3.2' width='4.2' height='17.3' rx='1.2' fill='%232a2635'/%3E%3Ccircle cx='17.6' cy='4.6' r='4.4' fill='%230c0b12'/%3E%3Ccircle cx='17.6' cy='4.6' r='3.6' fill='%231a9e4b'/%3E%3Cpath d='M15.9 4.6l1.1 1.1 2-2.2' stroke='%23fff' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 22'%3E%3Crect x='1.5' y='12.5' width='4.2' height='8' rx='1.2' fill='%23838ea0'/%3E%3Crect x='7.4' y='8' width='4.2' height='12.5' rx='1.2' fill='%235b8cff'/%3E%3Crect x='13.3' y='3.2' width='4.2' height='17.3' rx='1.2' fill='%23262c3a'/%3E%3Ccircle cx='17.6' cy='4.6' r='4.4' fill='%230b0e14'/%3E%3Ccircle cx='17.6' cy='4.6' r='3.6' fill='%231a9e4b'/%3E%3Cpath d='M15.9 4.6l1.1 1.1 2-2.2' stroke='%23fff' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E">
   <style>
     /* ══ Type ══════════════════════════════════════════════════════════════
-       IBM Plex Sans / Mono, vendored locally (modelcicd/static/fonts/, see
+       Inter / JetBrains Mono, vendored locally (modelcicd/static/fonts/, see
        NOTICE.md there) — not fetched from a CDN at runtime. This app has to
-       render identically with no network, so the files ship with it. Plex
-       was IBM's own choice for exactly this kind of surface — an engineer
-       reading dense technical output and making a call from it — rather
-       than a startup-marketing typeface pressed into service for a
-       benchmarking tool it wasn't drawn for. */
+       render identically with no network, so the files ship with it. Both
+       are the conventional, widely-recognized choice for a professional web
+       application's UI text and data respectively, rather than a distinctive
+       display face this surface doesn't call for. */
     @font-face {
-      font-family: "IBM Plex Sans"; font-style: normal; font-weight: 400;
-      font-display: swap; src: url("{{ url_for('static', filename='fonts/ibm-plex-sans-400.woff2') }}") format("woff2");
+      font-family: "Inter"; font-style: normal; font-weight: 400;
+      font-display: swap; src: url("{{ url_for('static', filename='fonts/inter-400.woff2') }}") format("woff2");
     }
     @font-face {
-      font-family: "IBM Plex Sans"; font-style: normal; font-weight: 500;
-      font-display: swap; src: url("{{ url_for('static', filename='fonts/ibm-plex-sans-500.woff2') }}") format("woff2");
+      font-family: "Inter"; font-style: normal; font-weight: 500;
+      font-display: swap; src: url("{{ url_for('static', filename='fonts/inter-500.woff2') }}") format("woff2");
     }
     @font-face {
-      font-family: "IBM Plex Sans"; font-style: normal; font-weight: 600;
-      font-display: swap; src: url("{{ url_for('static', filename='fonts/ibm-plex-sans-600.woff2') }}") format("woff2");
+      font-family: "Inter"; font-style: normal; font-weight: 600;
+      font-display: swap; src: url("{{ url_for('static', filename='fonts/inter-600.woff2') }}") format("woff2");
     }
     @font-face {
-      font-family: "IBM Plex Sans"; font-style: normal; font-weight: 700;
-      font-display: swap; src: url("{{ url_for('static', filename='fonts/ibm-plex-sans-700.woff2') }}") format("woff2");
+      font-family: "Inter"; font-style: normal; font-weight: 700;
+      font-display: swap; src: url("{{ url_for('static', filename='fonts/inter-700.woff2') }}") format("woff2");
     }
     @font-face {
-      font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400;
-      font-display: swap; src: url("{{ url_for('static', filename='fonts/ibm-plex-mono-400.woff2') }}") format("woff2");
+      font-family: "JetBrains Mono"; font-style: normal; font-weight: 400;
+      font-display: swap; src: url("{{ url_for('static', filename='fonts/jetbrains-mono-400.woff2') }}") format("woff2");
     }
     @font-face {
-      font-family: "IBM Plex Mono"; font-style: normal; font-weight: 500;
-      font-display: swap; src: url("{{ url_for('static', filename='fonts/ibm-plex-mono-500.woff2') }}") format("woff2");
+      font-family: "JetBrains Mono"; font-style: normal; font-weight: 500;
+      font-display: swap; src: url("{{ url_for('static', filename='fonts/jetbrains-mono-500.woff2') }}") format("woff2");
     }
 
     /* ══ Design system ═════════════════════════════════════════════════════
@@ -66,70 +65,71 @@
        alongside it (see the @font-face rules above) rather than being
        loaded from a CDN.
 
-       Dark is the default (unguarded :root); an explicit data-theme choice
-       always beats the OS preference, in both directions. Every rule below
-       reads a token, never a literal colour, so both themes live in one
-       place. */
+       Light is the default (unguarded :root) — a white surface with a
+       single blue accent, the conventional look of a professional business
+       application; dark stays fully supported behind the toggle for anyone
+       who prefers it. An explicit data-theme choice always beats the OS
+       preference, in both directions. Every rule below reads a token, never
+       a literal colour, so both themes live in one place. */
 
     :root {
-      color-scheme: dark;
+      color-scheme: light;
 
-      /* Surfaces, deliberately layered: page → panel → raised, each with a
-         faint violet bias instead of pure blue-gray — a neutral that's been
-         chosen, not defaulted to. */
-      --bg: #0c0b12;
-      --panel: #15131c;
-      --raised: #1c1926;
-      --input-bg: #100e17;
+      /* Surfaces, deliberately layered: page → panel → raised. Panels are
+         pure white against a faint cool-grey page, which is what gives them
+         definition without leaning on a border alone. */
+      --bg: #f7f9fc;
+      --panel: #ffffff;
+      --raised: #eef2f8;
+      --input-bg: #ffffff;
 
-      --border: #2a2635;
-      --border-soft: #201d29;
+      --border: #d7dfea;
+      --border-soft: #e6ebf2;
 
-      --fg: #ece9f2;
-      --muted-2: #c6c1d5;
-      --muted: #948da3;
+      --fg: #101828;
+      --muted-2: #344054;
+      --muted: #667085;
 
-      /* The one brand colour — violet, chosen specifically to NOT be the
-         generic blue every AI-gateway dashboard defaults to. Reserved for
+      /* The one brand colour — a confident, conventional blue. Reserved for
          the accent alone; approved/pending/error stay semantic and untouched
          below, so colour still means exactly one thing each. */
-      --link: #a7b3ff;
-      --accent: #6d59ef;
+      --link: #1d4ed8;
+      --accent: #1d4ed8;
       --accent-fg: #ffffff;
-      --accent-bright: #8f7fff;
+      --accent-bright: #2563eb;
 
-      --green: #1a9e4b;
-      --success-bg: #0f2a1a;
-      --success-border: #1e5c33;
-      --success-fg: #86e2a6;
-      --approved-bg: #10301e;
-      --approved-fg: #7ee2a0;
+      --green: #12833f;
+      --success-bg: #eaf8ef;
+      --success-border: #9bd9b1;
+      --success-fg: #10602f;
+      --approved-bg: #e6f7ec;
+      --approved-fg: #12602f;
 
-      --error-bg: #2b1416;
-      --error-border: #6b2b30;
-      --error-fg: #f0a6a6;
+      --error-bg: #fdecec;
+      --error-border: #e5a3a3;
+      --error-fg: #8f2020;
 
-      --pending-bg: #2e2410;
-      --pending-fg: #f2c65c;
+      --pending-bg: #fdf3d6;
+      --pending-fg: #74560a;
 
-      --neutral-badge-bg: #241f30;
-      --neutral-badge-fg: #c6c1d5;
-      --none-badge-fg: #948da3;
+      --neutral-badge-bg: #eef2f8;
+      --neutral-badge-fg: #344054;
+      --none-badge-fg: #667085;
 
-      --tick: #2e2a3a;
-      --tick-text: #857e91;
+      --tick: #d7dfea;
+      --tick-text: #7c8a9c;
 
-      --shadow: 0 1px 2px rgba(0,0,0,.32), 0 4px 12px rgba(0,0,0,.22);
-      --shadow-sm: 0 1px 2px rgba(0,0,0,.28);
+      --shadow: 0 1px 2px rgba(20,23,28,.06), 0 4px 12px rgba(20,23,28,.05);
+      --shadow-sm: 0 1px 2px rgba(20,23,28,.06);
 
       /* Type scale + spacing scale — one source for both, so rhythm is
          consistent instead of re-guessed as an inline style per template.
-         Plex first, a real system stack behind it as a fallback only —
-         for the rare case the font files fail to load, never the
-         intended rendering. */
-      --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system,
+         Inter / JetBrains Mono first, a real system stack behind them as a
+         fallback only — for the rare case the font files fail to load,
+         never the intended rendering. */
+      --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system,
                    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", "SF Mono",
+      --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", "SF Mono",
                    "Segoe UI Mono", Consolas, "Liberation Mono", monospace;
       --fs-xs: 11px;  --fs-sm: 12px;  --fs-base: 13.5px;
       --fs-md: 15px;  --fs-lg: 19px;  --fs-xl: 25px; --fs-2xl: 33px;
@@ -138,57 +138,57 @@
       --radius: 8px; --radius-sm: 5px; --radius-lg: 12px;
     }
 
-    @media (prefers-color-scheme: light) {
-      :root:not([data-theme="dark"]) {
-        color-scheme: light;
-        --bg: #f9f7fc;
-        --panel: #ffffff;
-        --raised: #f3f0f9;
-        --input-bg: #ffffff;
-        --border: #ded8ec;
-        --border-soft: #ebe7f4;
-        --fg: #18151f;
-        --muted-2: #423d4f;
-        --muted: #6d6578;
-        --link: #4a3bd1;
-        --accent: #5a3fe0;
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        color-scheme: dark;
+        --bg: #0b0e14;
+        --panel: #12161f;
+        --raised: #1a1f2b;
+        --input-bg: #0e1219;
+        --border: #262c3a;
+        --border-soft: #1c212c;
+        --fg: #e7eaf0;
+        --muted-2: #b7bfcc;
+        --muted: #838ea0;
+        --link: #7fa8ff;
+        --accent: #3b6df0;
         --accent-fg: #ffffff;
-        --accent-bright: #6c4fec;
-        --green: #12833f;
-        --success-bg: #eaf8ef;
-        --success-border: #9bd9b1;
-        --success-fg: #10602f;
-        --approved-bg: #e6f7ec;
-        --approved-fg: #12602f;
-        --error-bg: #fdecec;
-        --error-border: #e5a3a3;
-        --error-fg: #8f2020;
-        --pending-bg: #fdf3d6;
-        --pending-fg: #74560a;
-        --neutral-badge-bg: #f0edf7;
-        --neutral-badge-fg: #4a4459;
-        --none-badge-fg: #726b80;
-        --tick: #ded8ec;
-        --tick-text: #837c8f;
-        --shadow: 0 1px 2px rgba(20,23,28,.06), 0 4px 12px rgba(20,23,28,.05);
-        --shadow-sm: 0 1px 2px rgba(20,23,28,.06);
+        --accent-bright: #5b8cff;
+        --green: #1a9e4b;
+        --success-bg: #0f2a1a;
+        --success-border: #1e5c33;
+        --success-fg: #86e2a6;
+        --approved-bg: #10301e;
+        --approved-fg: #7ee2a0;
+        --error-bg: #2b1416;
+        --error-border: #6b2b30;
+        --error-fg: #f0a6a6;
+        --pending-bg: #2e2410;
+        --pending-fg: #f2c65c;
+        --neutral-badge-bg: #1c212c;
+        --neutral-badge-fg: #b7bfcc;
+        --none-badge-fg: #838ea0;
+        --tick: #262c3a;
+        --tick-text: #7d8494;
+        --shadow: 0 1px 2px rgba(0,0,0,.32), 0 4px 12px rgba(0,0,0,.22);
+        --shadow-sm: 0 1px 2px rgba(0,0,0,.28);
       }
     }
     :root[data-theme="light"] {
       color-scheme: light;
-      --bg: #f9f7fc;
+      --bg: #f7f9fc;
       --panel: #ffffff;
-      --raised: #f3f0f9;
+      --raised: #eef2f8;
       --input-bg: #ffffff;
-      --border: #ded8ec;
-      --border-soft: #ebe7f4;
-      --fg: #18151f;
-      --muted-2: #423d4f;
-      --muted: #6d6578;
-      --link: #4a3bd1;
-      --accent: #5a3fe0;
+      --border: #d7dfea;
+      --border-soft: #e6ebf2;
+      --fg: #101828;
+      --muted-2: #344054;
+      --muted: #667085;
+      --link: #1d4ed8;
+      --accent: #1d4ed8;
       --accent-fg: #ffffff;
-      --accent-bright: #6c4fec;
+      --accent-bright: #2563eb;
       --green: #12833f;
       --success-bg: #eaf8ef;
       --success-border: #9bd9b1;
@@ -200,29 +200,29 @@
       --error-fg: #8f2020;
       --pending-bg: #fdf3d6;
       --pending-fg: #74560a;
-      --neutral-badge-bg: #f0edf7;
-      --neutral-badge-fg: #4a4459;
-      --none-badge-fg: #726b80;
-      --tick: #ded8ec;
-      --tick-text: #837c8f;
+      --neutral-badge-bg: #eef2f8;
+      --neutral-badge-fg: #344054;
+      --none-badge-fg: #667085;
+      --tick: #d7dfea;
+      --tick-text: #7c8a9c;
       --shadow: 0 1px 2px rgba(20,23,28,.06), 0 4px 12px rgba(20,23,28,.05);
       --shadow-sm: 0 1px 2px rgba(20,23,28,.06);
     }
     :root[data-theme="dark"] {
       color-scheme: dark;
-      --bg: #0c0b12;
-      --panel: #15131c;
-      --raised: #1c1926;
-      --input-bg: #100e17;
-      --border: #2a2635;
-      --border-soft: #201d29;
-      --fg: #ece9f2;
-      --muted-2: #c6c1d5;
-      --muted: #948da3;
-      --link: #a7b3ff;
-      --accent: #6d59ef;
+      --bg: #0b0e14;
+      --panel: #12161f;
+      --raised: #1a1f2b;
+      --input-bg: #0e1219;
+      --border: #262c3a;
+      --border-soft: #1c212c;
+      --fg: #e7eaf0;
+      --muted-2: #b7bfcc;
+      --muted: #838ea0;
+      --link: #7fa8ff;
+      --accent: #3b6df0;
       --accent-fg: #ffffff;
-      --accent-bright: #8f7fff;
+      --accent-bright: #5b8cff;
       --green: #1a9e4b;
       --success-bg: #0f2a1a;
       --success-border: #1e5c33;
@@ -234,10 +234,10 @@
       --error-fg: #f0a6a6;
       --pending-bg: #2e2410;
       --pending-fg: #f2c65c;
-      --neutral-badge-bg: #22262e;
-      --neutral-badge-fg: #c3c8d2;
-      --none-badge-fg: #8c94a1;
-      --tick: #2b303a;
+      --neutral-badge-bg: #1c212c;
+      --neutral-badge-fg: #b7bfcc;
+      --none-badge-fg: #838ea0;
+      --tick: #262c3a;
       --tick-text: #7d8494;
       --shadow: 0 1px 2px rgba(0,0,0,.32), 0 4px 12px rgba(0,0,0,.22);
       --shadow-sm: 0 1px 2px rgba(0,0,0,.28);
@@ -296,7 +296,7 @@
     .brand { display: flex; align-items: center; gap: var(--sp-2);
              color: var(--fg); text-decoration: none; }
     .brand-mark { display: block; flex-shrink: 0; }
-    .brand-name { font-size: var(--fs-md); font-weight: 680; letter-spacing: -.02em; }
+    .brand-name { font-size: var(--fs-md); font-weight: 700; letter-spacing: -.02em; }
     .nav { display: flex; align-items: center; gap: var(--sp-2); }
 
     /* ══ Panels ════════════════════════════════════════════════════════
@@ -425,7 +425,7 @@
 
     /* ══ Forms ═════════════════════════════════════════════════════════ */
 
-    label { display: block; font-size: var(--fs-sm); font-weight: 550;
+    label { display: block; font-size: var(--fs-sm); font-weight: 600;
             color: var(--muted-2); margin: var(--sp-4) 0 var(--sp-1); }
     label:first-child { margin-top: 0; }
     input[type=text], input[type=email], input[type=number], input[type=url],
@@ -513,7 +513,7 @@
     /* ══ Details / disclosure ══════════════════════════════════════════ */
 
     details > summary { cursor: pointer; font-size: var(--fs-sm); color: var(--link);
-                        font-weight: 550; padding: var(--sp-1) 0; }
+                        font-weight: 600; padding: var(--sp-1) 0; }
     details > summary:hover { text-decoration: underline; text-underline-offset: 2px; }
     details[open] > summary { margin-bottom: var(--sp-2); }
 
@@ -576,7 +576,7 @@
       function current() {
         var explicit = root.getAttribute("data-theme");
         if (explicit) return explicit;
-        return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
       }
       function apply(theme) {
         root.setAttribute("data-theme", theme);
