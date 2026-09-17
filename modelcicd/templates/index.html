@@ -21,8 +21,15 @@
 {% endif %}
 
 {% if projects %}
-<div class="panel">
-  <div class="stat-grid">
+{# ONE OBJECT, NOT TWO BOXES WITH A GAP BETWEEN THEM. The stat row and the
+   table are the same summary — "your projects, at a glance" — so they're
+   one panel with an internal divider, not two separately-bordered cards
+   stacked with margin between. Composing them apart was exactly the "flat
+   sheet of identical boxes" this design system's own CSS comments warn
+   against; a returning operator has few enough projects that stacking them
+   as peers reads as unfinished rather than spacious. #}
+<div class="panel panel-flush">
+  <div class="stat-grid" style="padding:var(--sp-4) var(--sp-5);">
     <div>
       <div class="stat-label">Projects</div>
       <div class="stat-value is-big">{{ projects|length }}</div>
@@ -36,16 +43,31 @@
       <div class="stat-value is-big">{{ pending_count }}</div>
     </div>
   </div>
-</div>
-
-<div class="panel panel-flush">
-  <table>
-    <tr><th>Project</th><th>Description</th><th class="num">AI features</th><th>Connected</th></tr>
+  <table style="margin:0; border-top:1px solid var(--border-soft);">
+    <tr><th></th><th>Project</th><th>Description</th><th class="num">AI features</th><th>Connected</th></tr>
     {% for p in projects %}
     <tr>
+      <td style="width:1%; padding-right:0;">
+        {# A small, deterministic identity per row — the same letter and
+           colour every visit, so a project is recognizable at a glance
+           instead of every row reading as an identical line of text. #}
+        <div style="width:26px; height:26px; border-radius:7px; display:flex;
+                    align-items:center; justify-content:center;
+                    background:color-mix(in srgb, var(--accent-bright) 16%, var(--raised));
+                    color:var(--accent-bright); font-family:var(--font-mono);
+                    font-weight:700; font-size:var(--fs-sm);">
+          {{ p.name[0]|upper }}
+        </div>
+      </td>
       <td><a class="link" href="{{ url_for('project_detail', slug=p.slug) }}">{{ p.name }}</a></td>
       <td class="muted">{{ p.description or '—' }}</td>
-      <td class="num">{{ p.use_case_count }}</td>
+      <td class="num">
+        {% if p.use_case_count %}
+        <span class="badge tie">{{ p.use_case_count }}</span>
+        {% else %}
+        <span class="badge none">not started</span>
+        {% endif %}
+      </td>
       <td class="muted num">{{ p.created_at[:10] if p.created_at else '—' }}</td>
     </tr>
     {% endfor %}
