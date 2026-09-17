@@ -9,3 +9,9 @@ cache/
 *.egg-info/
 build/
 dist/
+
+# Locally-installed AI coding-agent skills (`npx skills add ...`) — tooling
+# for whoever's developing this repo, not part of the shipped product.
+.agents/
+.claude/
+skills-lock.json

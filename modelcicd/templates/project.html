@@ -5,15 +5,15 @@
 <div class="page-head">
   <h1>{{ project.name }}</h1>
   {% if project.description %}<p class="sub">{{ project.description }}</p>{% endif %}
-  <p class="muted" style="margin:var(--sp-2) 0 0;">
-    <span class="stat-label" style="display:inline; margin:0;">Marketplaces</span>
-    <span class="mono">{{ project.providers|join(', ') }}</span>
+  {# Whitespace and a row break separate these, not a middle dot joining
+     them onto one line — a repo path can run long, and crowding it against
+     "Marketplaces" behind a "·" reads worse the longer it gets, not better. #}
+  <div class="stack-tight" style="margin-top:var(--sp-3);">
+    <div><span class="muted">Marketplaces</span> <span class="mono">{{ project.providers|join(', ') }}</span></div>
     {% if project.repo_path %}
-    <span class="sep"> &nbsp;·&nbsp; </span>
-    <span class="stat-label" style="display:inline; margin:0;">Repo</span>
-    <span class="mono">{{ project.repo_path }}</span>
+    <div><span class="muted">Repo</span> <span class="mono">{{ project.repo_path }}</span></div>
     {% endif %}
-  </p>
+  </div>
 </div>
 
 {% if created_flash %}
