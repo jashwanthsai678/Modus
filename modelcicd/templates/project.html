@@ -128,4 +128,16 @@
 </table>
 </div>
 {% endif %}
+
+{# DELIBERATELY SEPARATE FROM THE TOOLBAR ABOVE, both in placement and in
+   weight — an irreversible action shouldn't sit at the same visual level as
+   "add a feature" or "view scan results", where a misclick costs nothing. #}
+<div class="panel" style="border-color:var(--error-border); margin-top:var(--sp-6);">
+  <div class="panel-head">
+    <h3 style="color:var(--error-fg);">Delete this project</h3>
+  </div>
+  <p class="muted">Removes every feature, all state, and every saved run file. No trash, no undo.</p>
+  <a class="btn" style="border-color:var(--error-border); color:var(--error-fg);"
+     href="{{ url_for('delete_project_form', slug=project.slug) }}">Delete project&hellip;</a>
+</div>
 {% endblock %}

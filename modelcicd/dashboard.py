@@ -307,7 +307,8 @@ def create_app() -> Flask:
             p.use_case_count = len(project_module.list_use_cases(p.slug))
         return render_template("index.html", projects=projects, legacy_cases=legacy,
                               quickstart=onboarding_module.text(),
-                              pending_count=len(state_module.all_pending()))
+                              pending_count=len(state_module.all_pending()),
+                              deleted_flash=request.args.get("deleted"))
 
     @app.route("/projects/new")
     def connect_project_form():
@@ -420,6 +421,35 @@ def create_app() -> Flask:
                               defined_not_run=sorted(defined_not_run),
                               has_scan_results=has_scan_results, steps=steps,
                               created_flash=request.args.get("created"))
+
+    # ── Delete a project — a dedicated confirmation page, not a one-click
+    #    button. Irreversible (no trash, no undo), so this gets the same
+    #    weight as spending money on a run: show exactly what's at stake
+    #    BEFORE asking, never after. ───────────────────────────────────────
+
+    @app.route("/projects/<slug>/delete")
+    def delete_project_form(slug):
+        try:
+            impact = project_module.delete_impact(slug)
+        except FileNotFoundError:
+            abort(404, f"no project at {slug!r}")
+        return render_template("delete_project.html", slug=slug, impact=impact, error=None)
+
+    @app.route("/projects/<slug>/delete", methods=["POST"])
+    def delete_project(slug):
+        try:
+            impact = project_module.delete_impact(slug)
+        except FileNotFoundError:
+            abort(404, f"no project at {slug!r}")
+        # TYPED, NOT CLICKED. A JS confirm() dialog is exactly the kind of
+        # prompt a habit-formed thumb dismisses without reading — asking for
+        # the slug back means the person's eyes were actually on the name of
+        # what they're about to lose.
+        if (request.form.get("confirm_slug") or "").strip() != slug:
+            return render_template("delete_project.html", slug=slug, impact=impact,
+                                  error="that didn't match the project's slug — nothing was deleted."), 400
+        project_module.delete(slug)
+        return redirect(url_for("index", deleted=impact["name"]), code=303)
 
     # ── Overview — everything about a project's features, in one place ──────
     #

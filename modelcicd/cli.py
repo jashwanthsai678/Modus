@@ -238,6 +238,44 @@ def cmd_project_list(args) -> int:
     return 0
 
 
+def cmd_project_delete(args) -> int:
+    """Shows what's actually at stake — feature count, and by name, which
+    ones have a model currently approved — BEFORE asking, the same way
+    `run` shows its cost before spending it. Irreversible: there's no
+    trash and no undo, so the confirmation asks for the slug typed back,
+    not just a y/N a habit-formed thumb can answer without reading."""
+    try:
+        impact = project_module.delete_impact(args.slug)
+    except FileNotFoundError as exc:
+        print(str(exc))
+        return 2
+
+    print(f"\nDelete project {impact['name']!r} (slug {impact['slug']!r})?")
+    print(f"  {impact['feature_count']} AI feature(s), all their run history, and every")
+    print(f"  saved run file — gone permanently, no undo.")
+    if impact["approved_features"]:
+        print(f"  {len(impact['approved_features'])} of them currently have a model APPROVED "
+             f"and in production:")
+        for name in impact["approved_features"]:
+            print(f"    - {name}")
+        print(f"  Any application still calling resolve() for these will lose its approved")
+        print(f"  model and fall back to whatever fallback it was given, or raise if none was.")
+
+    if not args.yes:
+        try:
+            reply = input(f"\ntype the slug ({impact['slug']!r}) to confirm, anything else "
+                         f"cancels: ").strip()
+        except EOFError:
+            reply = ""
+        if reply != impact["slug"]:
+            print("nothing was deleted.")
+            return 1
+
+    project_module.delete(args.slug)
+    print(f"\ndeleted {impact['slug']!r}.")
+    return 0
+
+
 def _scan_results_path(slug: str) -> Path:
     return project_module.DEFAULT_DIR / slug / "scan_results.json"
 
@@ -787,6 +825,13 @@ def build_parser() -> argparse.ArgumentParser:
                          "candidates, e.g. openrouter,groq (default: openrouter)")
     proj_sub.add_parser("list", help="list connected projects")
 
+    pdel = proj_sub.add_parser("delete", help="permanently remove a project — every feature, "
+                                              "all state, all run history. No undo.")
+    pdel.add_argument("slug")
+    pdel.add_argument("--yes", action="store_true",
+                      help="skip the type-the-slug-to-confirm prompt (for scripts — the impact "
+                           "summary still prints first)")
+
     pd = proj_sub.add_parser("set-defaults",
                              help="set the shared rubric/price/judge every NEW AI feature "
                                   "in this project starts from — only overrides what you pass")
@@ -903,6 +948,7 @@ def main() -> int:
     args = build_parser().parse_args()
     if args.command == "project":
         return {"create": cmd_project_create, "list": cmd_project_list,
+                "delete": cmd_project_delete,
                 "set-defaults": cmd_project_set_defaults}[args.project_command](args)
     if args.command == "scheduler":
         return {"run-due": cmd_scheduler_run_due, "serve": cmd_scheduler_serve}[args.scheduler_command](args)

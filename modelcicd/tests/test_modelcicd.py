@@ -855,6 +855,168 @@ def test_project_defaults_round_trip_and_never_touch_existing_use_cases() -> Non
         check("rubric saved", loaded.defaults["rubric"][0]["id"] == "clarity")
 
 
+# ── project deletion: real, irreversible, so it earns its own coverage ──────
+#
+# WHAT PROMPTED THIS. There was no way to delete a project at all — CLI or
+# dashboard — until a real person asked "where's the delete button" after
+# creating a throwaway test project. Every check below exists because
+# deleting is the one project action with no undo: get delete_impact wrong
+# and someone loses history without knowing; get delete wrong and it either
+# leaves orphaned files behind or reaches outside the project it was told
+# to remove.
+
+def test_delete_removes_everything_project_create_wrote() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        project.create("Demo App", notify_email="demo@example.com", root=root)
+        project_dir = root / "demo-app"
+        check("the project directory exists before deleting", project_dir.exists())
+        project.delete("demo-app", root=root)
+        check("the whole directory is gone", not project_dir.exists())
+        check("no longer registered", not project.exists("demo-app", root=root))
+        check("no longer listed", project.list_all(root=root) == [])
+
+
+def test_delete_refuses_an_unknown_slug() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            project.delete("nothing-here", root=Path(d))
+            check("refused", False)
+        except FileNotFoundError as exc:
+            check("refused", True)
+            check("names the slug", "nothing-here" in str(exc), str(exc))
+
+
+def test_delete_never_touches_an_externally_referenced_repo() -> None:
+    """A project pointed at a folder you already had (--repo-path) only
+    ever stores that path as a STRING — the real directory lives outside
+    the project's own tree and must survive a delete untouched. This is
+    the one way `delete` could do real damage beyond the project's own
+    data if it got the containment wrong."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d) / "projects"
+        external_repo = Path(d) / "someones-real-app"
+        external_repo.mkdir(parents=True)
+        (external_repo / "marker.txt").write_text("still here?", encoding="utf-8")
+
+        project.create("Demo App", notify_email="demo@example.com",
+                       repo_path=str(external_repo), root=root)
+        project.delete("demo-app", root=root)
+
+        check("the project's own directory is gone", not (root / "demo-app").exists())
+        check("the EXTERNAL repo survives untouched",
+              (external_repo / "marker.txt").read_text(encoding="utf-8") == "still here?")
+
+
+def test_delete_removes_a_repo_it_cloned_itself() -> None:
+    """The opposite case from the one above: a repo THIS project cloned
+    (--repo-url, landing inside the project's own tree) is fair game and
+    must go with everything else — it's this project's own copy, not
+    someone else's folder."""
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        cloned_marker = project._repo_dir("demo-app", root) / "cloned.txt"
+        cloned_marker.parent.mkdir(parents=True, exist_ok=True)
+        cloned_marker.write_text("cloned copy", encoding="utf-8")
+        project.create("Demo App", notify_email="demo@example.com", root=root)
+        # (the marker predates `create`'s own directory-making, and survives it —
+        #  proving it's really inside the project's tree before the delete)
+        check("the cloned-repo stand-in is inside the project's own tree",
+              cloned_marker.exists())
+        project.delete("demo-app", root=root)
+        check("it's gone along with everything else", not cloned_marker.exists())
+
+
+def test_delete_impact_reports_feature_count_and_which_are_approved() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        project.create("Demo App", notify_email="demo@example.com", root=root)
+        for name in ("router", "summarizer"):
+            (project.use_cases_dir("demo-app", root) / f"{name}.yaml").write_text(
+                "useCase: " + name, encoding="utf-8")
+        state.record_run("router", {"ranAt": "t", "tiers": {
+            "free": [{"model": "vendor/winner", "score": 4.5}]}},
+            root=project.state_dir("demo-app", root))
+        state.approve("router", "vendor/winner", root=project.state_dir("demo-app", root))
+
+        impact = project.delete_impact("demo-app", root=root)
+        check("counts both features", impact["feature_count"] == 2, f"{impact}")
+        check("names only the approved one", impact["approved_features"] == ["router"],
+              f"{impact}")
+        check("carries the project's display name", impact["name"] == "Demo App")
+
+
+def test_delete_impact_on_an_unknown_slug_raises_before_anything_else() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            project.delete_impact("nothing-here", root=Path(d))
+            check("raises", False)
+        except FileNotFoundError:
+            check("raises", True)
+
+
+# ── dashboard: the delete confirmation flow ──────────────────────────────────
+
+def _delete_client():
+    from modelcicd import dashboard
+    tmp = Path(tempfile.mkdtemp())
+    original = project.DEFAULT_DIR
+    project.DEFAULT_DIR = tmp / "projects"
+    project.create("Demo App", slug="demo-app", notify_email="t@example.com")
+    app = dashboard.create_app()
+    app.config["TESTING"] = True
+
+    def restore():
+        project.DEFAULT_DIR = original
+
+    return app.test_client(), restore
+
+
+def test_delete_confirmation_page_shows_the_impact_before_asking() -> None:
+    client_, restore = _delete_client()
+    try:
+        r = client_.get("/projects/demo-app/delete")
+        check("200", r.status_code == 200, f"{r.status_code}")
+        body = r.get_data(as_text=True)
+        check("names the project", "Demo App" in body, body[:200])
+        check("asks for the slug back", 'value="demo-app"' in body or "demo-app" in body)
+    finally:
+        restore()
+
+
+def test_delete_post_with_the_wrong_slug_deletes_nothing() -> None:
+    client_, restore = _delete_client()
+    try:
+        r = client_.post("/projects/demo-app/delete", data={"confirm_slug": "wrong"})
+        check("refused", r.status_code == 400, f"{r.status_code}")
+        check("project still exists", project.exists("demo-app"))
+    finally:
+        restore()
+
+
+def test_delete_post_with_the_right_slug_deletes_and_redirects() -> None:
+    client_, restore = _delete_client()
+    try:
+        r = client_.post("/projects/demo-app/delete", data={"confirm_slug": "demo-app"},
+                         follow_redirects=False)
+        check("redirects home", r.status_code == 303, f"{r.status_code}")
+        check("project is actually gone", not project.exists("demo-app"))
+        check("the redirect names what was deleted",
+              "Demo" in r.headers.get("Location", "") or "deleted" in r.headers.get("Location", ""),
+              r.headers.get("Location"))
+    finally:
+        restore()
+
+
+def test_delete_form_unknown_project_404s() -> None:
+    client_, restore = _delete_client()
+    try:
+        r = client_.get("/projects/does-not-exist/delete")
+        check("404", r.status_code == 404, f"{r.status_code}")
+    finally:
+        restore()
+
+
 def test_wizard_defaults_from_project_only_sets_shared_fields() -> None:
     f = wizard.defaults_from_project({
         "rubric": [{"id": "clarity", "description": "is it clear", "weight": 2.0}],

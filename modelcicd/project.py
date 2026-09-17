@@ -26,6 +26,7 @@ repo's own `projects/`.
 the requested path and refuses anything that lands outside `repo_path` —
 a project's repo is a WINDOW, not a way to read arbitrary files on disk.
 """
+import json
 import re
 import shutil
 import subprocess
@@ -221,6 +222,57 @@ def set_defaults(slug: str, defaults: dict, *, root: Optional[Path] = None) -> P
     proj.defaults = merged
     _save(proj, root)
     return proj
+
+
+def delete_impact(slug: str, root: Optional[Path] = None) -> dict:
+    """What's actually at stake before deleting — feature count, and by
+    name, which of them have a model currently approved. Read BEFORE the
+    delete, the same way `run` shows a cost before spending it: "delete
+    content_tools_app" and "delete llm-api-app, including 3 approved
+    models still in production" are different decisions, and a person
+    should see which one they're making."""
+    proj = load(slug, root)
+    features = [p.stem for p in list_use_cases(slug, root)]
+    approved = []
+    for name in features:
+        st = state_dir(slug, root) / f"{name}.json"
+        if st.exists():
+            try:
+                if json.loads(st.read_text(encoding="utf-8")).get("approvedModel"):
+                    approved.append(name)
+            except (json.JSONDecodeError, OSError):
+                pass
+    return {"name": proj.name, "slug": slug, "feature_count": len(features),
+           "approved_features": approved}
+
+
+def delete(slug: str, root: Optional[Path] = None) -> None:
+    """Permanently removes a project — its registration, every feature's
+    use_case.yaml, all state (approved models, pending candidates, run
+    history), and every saved run file. Irreversible: there is no trash,
+    no undo, matching every other place in this project that deletes
+    something (a rejected candidate stays in `rejected`, but a deleted
+    PROJECT is just gone — the two aren't the same kind of action, and
+    dressing this one up as recoverable when it isn't would be worse than
+    being plain about it).
+
+    ONE DIRECTORY, ONE `rmtree`. Every piece of a project's data —
+    `project.yaml`, `use_cases/`, `state/`, `out/`, `scan_results.json`,
+    and a CLONED repo under `repo/` if one exists — lives inside
+    `_dir(slug, root)` by construction (see `create`), so removing that
+    one directory removes all of it with nothing left orphaned behind.
+
+    NEVER TOUCHES AN EXTERNALLY-REFERENCED repo_path. A project pointed at
+    a folder you already had (`--repo-path`, not `--repo-url`) only ever
+    stores that path as a STRING in `project.yaml` — the actual directory
+    lives outside `_dir(slug, root)` entirely, so it was never something
+    this function could reach even by accident. Only a repo THIS project
+    cloned itself (`--repo-url`, into `repo/` inside its own directory) is
+    ever removed.
+    """
+    if not exists(slug, root):
+        raise FileNotFoundError(f"no project registered at slug {slug!r} — nothing to delete.")
+    shutil.rmtree(_dir(slug, root))
 
 
 def list_all(root: Optional[Path] = None) -> list:

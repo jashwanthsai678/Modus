@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Delete {{ impact.name }} — Modus{% endblock %}
+{% block content %}
+<p class="crumb"><a class="link" href="{{ url_for('project_detail', slug=slug) }}">&larr; {{ impact.name }}</a></p>
+<div class="page-head">
+  <h1>Delete <span class="mono">{{ impact.name }}</span></h1>
+  <p class="sub">Permanent. There is no trash and no undo — this is the same weight as spending
+    money on a run, shown before you're asked, not after.</p>
+</div>
+
+{% if error %}
+<div class="card errors">{{ error }}</div>
+{% endif %}
+
+<div class="panel" style="border-color:var(--error-border);">
+  <p style="margin-top:0;">This removes:</p>
+  <ul class="stack-tight" style="margin:0 0 var(--sp-4); padding-left:18px;">
+    <li><strong>{{ impact.feature_count }}</strong> AI feature{{ 's' if impact.feature_count != 1 else '' }}
+      — every <code>use_case.yaml</code></li>
+    <li>All of their approval and run history — nothing is kept</li>
+    <li>Every saved run file (leaderboards, real answers, judge reasoning)</li>
+  </ul>
+
+  {% if impact.approved_features %}
+  <div class="card errors" style="margin-bottom:var(--sp-4);">
+    <strong>{{ impact.approved_features|length }} feature{{ 's' if impact.approved_features|length != 1 else '' }}
+      currently ha{{ 's' if impact.approved_features|length == 1 else 've' }} a model
+      <u>approved and in production</u>:</strong>
+    <ul>
+      {% for name in impact.approved_features %}
+      <li><span class="mono">{{ name }}</span></li>
+      {% endfor %}
+    </ul>
+    <p style="margin:var(--sp-2) 0 0;">Any application still calling <code>resolve()</code> for these
+      loses its approved model the moment this is deleted, and falls back to whatever
+      <code>fallback=</code> it was given — or raises, if none was.</p>
+  </div>
+  {% endif %}
+
+  <form method="post">
+    <label for="confirm_slug">Type the project's slug to confirm: <span class="mono">{{ slug }}</span></label>
+    <input id="confirm_slug" name="confirm_slug" type="text" autocomplete="off"
+           placeholder="{{ slug }}">
+    <div class="toolbar" style="margin-top:var(--sp-4);">
+      <button type="submit" class="btn"
+              style="background:var(--error-bg); border-color:var(--error-border); color:var(--error-fg);"
+              onclick="return confirm('This cannot be undone. Delete {{ impact.name }} permanently?');">
+        Delete permanently
+      </button>
+      <a class="btn" href="{{ url_for('project_detail', slug=slug) }}">Cancel</a>
+    </div>
+  </form>
+</div>
+
+<p class="muted">Same thing from the CLI:
+  <code>python -m modelcicd.cli project delete {{ slug }}</code></p>
+{% endblock %}

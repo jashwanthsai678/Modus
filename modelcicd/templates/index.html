@@ -7,6 +7,11 @@
     promotion for every place your application calls an LLM.</p>
 </div>
 
+{% if deleted_flash %}
+<div class="card flash-success">Deleted <strong>{{ deleted_flash }}</strong> — its features, state,
+  and run history are gone.</div>
+{% endif %}
+
 {% if pending_count %}
 <div class="card flash-success" style="display:flex; align-items:center; justify-content:space-between; gap:var(--sp-3);">
   <span><strong>{{ pending_count }}</strong> candidate{{ 's' if pending_count != 1 else '' }}
