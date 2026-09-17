@@ -27,11 +27,10 @@
    comparable to future ones. That's often exactly what you want; it should
    just never be a surprise. #}
 <div class="card">
-  <p style="margin:0;"><strong>This feature has {{ run_count }} run{{ 's' if run_count != 1 else '' }} of history.</strong>
-    Changing the system prompt, the test cases, the rubric, the deterministic checks or the judge
-    changes what a score <em>means</em> — future runs won't be comparable to those, and the trend
-    line will break where the change happened rather than joining across it. Price ceilings,
-    tiers and the notify threshold don't affect comparability.</p>
+  <p style="margin:0;"><strong>{{ run_count }} run{{ 's' if run_count != 1 else '' }} of history.</strong>
+    Changing the prompt, test cases, rubric, checks, or judge breaks the trend line where the
+    edit happens — those scores stop being comparable to what comes after.
+    <span class="hint" title="Price ceilings, tiers, and the notify threshold don't affect comparability — only what changes how an answer is scored does.">(price/tier changes don't count ⓘ)</span></p>
 </div>
 {% endif %}
 

@@ -1259,5 +1259,5 @@ def create_app() -> Flask:
 
 def serve(host: str = "127.0.0.1", port: int = 5000) -> None:
     app = create_app()
-    print(f"Model CICD dashboard: http://{host}:{port}  (Ctrl+C to stop)")
+    print(f"Modus dashboard: http://{host}:{port}  (Ctrl+C to stop)")
     app.run(host=host, port=port)

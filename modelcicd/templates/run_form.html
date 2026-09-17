@@ -46,10 +46,8 @@
     {% if limit %}<input type="hidden" name="limit" value="{{ limit }}">{% endif %}
 
     {# THE HONEST VERSION OF A COST PREVIEW. `already_cached` is counted
-       from local files — no call, nothing spent — so this says what the
-       run will really buy instead of quoting the full price. And the
-       trade-off is stated rather than sold: a reused answer is a replay,
-       not a measurement of what that model does today. #}
+       from local files — no call, nothing spent — so the badge says what
+       the run will really buy instead of quoting the full price. #}
     <div class="checkline" style="margin: var(--sp-3) 0;">
       <input id="use_cache" name="use_cache" type="checkbox"
              {{ 'checked' if already_cached else '' }}>
@@ -58,39 +56,20 @@
         <span class="badge approved">{{ already_cached }} of {{ calls }} ready</span>
         {% endif %}
       </label>
+      <span class="hint" title="A reused answer is a replay, not a fresh measurement of what that model does today — the run record says how many were, and the noise checks (judge spread, candidate spread) never read the cache.">
+        &nbsp;— replay, not a fresh measurement. Makes rubric edits cheap to re-test. ⓘ</span>
     </div>
-    <p class="hint" style="margin: 0 0 var(--sp-4);">
-      {% if already_cached %}
-      {{ already_cached }} generation call(s) already have a stored answer for this exact
-      prompt, input and model — ticking this buys {{ calls - already_cached }} instead of
-      {{ calls }}. Judge calls are reused the same way when the rubric hasn't changed, which
-      is what makes editing a rubric cheap to iterate on.
-      {% else %}
-      Nothing is cached for this feature yet, so this run buys everything either way. Tick it
-      anyway and the answers are stored, making the next run after a rubric edit nearly free.
-      {% endif %}
-      A reused answer is a <strong>replay</strong>, not a fresh measurement of what that model
-      does today — the run record says how many were, and the two noise checks (judge spread
-      and candidate spread) never read the cache, so they stay real.
-    </p>
 
-    {# Disclosed with its cost, like everything else that spends. The probe
-       is tiny, but "tiny" is still not "free", and this project's habit is
-       to say so rather than round it down to nothing. #}
+    {# Disclosed with its cost, like everything else that spends — tiny is
+       still not free. #}
     <div class="checkline" style="margin: var(--sp-3) 0;">
       <input id="health_check" name="health_check" type="checkbox" checked>
       <label for="health_check" style="margin:0;">Check every model is still alive first
         <span class="badge tie">+{{ (candidates|length) + 1 }} tiny calls</span>
       </label>
+      <span class="hint" title="Drops only ids the platform confirms are gone — never a rate limit or a timeout. If the judge itself is dead, this refuses the whole run before spending anything. A pass only proves the id answered, not that it will handle your real test cases.">
+        &nbsp;— refuses if the judge is dead, drops only confirmed-gone ids. ⓘ</span>
     </div>
-    <p class="hint" style="margin: 0 0 var(--sp-4);">
-      One trivial probe per candidate, plus the judge, to drop ids the platform has deprecated
-      before a full run spends minutes discovering them. If the <strong>judge</strong> is dead this
-      refuses outright — otherwise every answer gets paid for and then scored as a failure.
-      A probe passing only means the id exists and answered; it is <em>not</em> a promise the model
-      will handle your real test cases. Only a definite "this id is gone" drops a candidate — a
-      rate limit or a timeout never does.
-    </p>
 
     <button type="submit" class="btn btn-primary">Run {{ candidates|length }} candidate(s)</button>
   </form>

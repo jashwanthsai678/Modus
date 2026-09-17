@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% block title %}Model CICD{% endblock %}
+{% block title %}Modus{% endblock %}
 {% block content %}
 <div class="page-head">
-  <h1>Model CICD</h1>
+  <h1>Modus</h1>
   <p class="sub">Continuous model discovery, sandboxed benchmarking, and human-approved
     promotion for every place your application calls an LLM.</p>
 </div>
@@ -64,69 +64,69 @@
   {% endif %}
 {% endif %}
 
-<h2>What this is</h2>
-<p>A self-hosted tool that continuously discovers, benchmarks, and lets you approve which
-  LLM your application actually uses — separately, for each specific feature that calls
-  one. It doesn't look for "the best model" in general; it finds the best model
-  <strong>for one job</strong>, tested against that job's own test cases and scored
-  against a rubric written for that job.</p>
-<div class="panel">
-  <div class="stat-label">Your integration point, in full</div>
-  <div class="mono" style="margin-top:var(--sp-2); line-height:1.7;">
-    from modelcicd.resolver import resolve<br>
-    model = resolve("support_bot_reply", fallback="gpt-4o-mini")
-  </div>
-</div>
+{# THE PITCH LIVES HERE, NOT SCROLLING PAST IT EVERY VISIT. A first-time
+   visitor with nothing connected yet needs this open by default — it's the
+   only thing on the page for them. A returning operator with real projects
+   above has already read it once; re-showing four paragraphs of "why this
+   exists" on every single visit is what makes a working tool feel like a
+   pitch deck instead of a dashboard. Same content either way, just not
+   competing for the first screen once there's real data to show instead. #}
+<details class="panel"{{ '' if projects else ' open' }}>
+  <summary>About Modus — what it does, and why</summary>
 
-<h2>Why it exists</h2>
-<ul class="stack-tight" style="margin:0 0 var(--sp-5); padding-left:18px;">
-  <li>New, cheaper, or better models ship every few weeks — nobody manually re-checks,
-    so most teams either overpay or never find out something better exists.</li>
-  <li>A quality regression from a model swap is usually invisible until a user hits it.</li>
-  <li>"Why are we using this model" is usually answered from memory, not evidence.</li>
-  <li>A silent model swap in production should require the same sign-off a dependency
-    upgrade would get.</li>
-</ul>
+  <p style="margin-top:var(--sp-3);">Continuously discovers, benchmarks, and lets you approve
+    which LLM your application actually uses — separately, for each feature that calls one.
+    Not "the best model" in general: the best model <strong>for one job</strong>, tested
+    against that job's own test cases, scored against a rubric written for that job.</p>
 
-<h2>What it gives you</h2>
-<div class="stat-grid" style="margin-bottom:var(--sp-6);">
-  <div class="panel">
-    <div class="stat-label">Lower cost, not guesswork</div>
-    <p class="muted" style="margin:0;">Every candidate is filtered against your price
-      ceiling before a cent is spent, and ranked only within its own price tier.</p>
+  <div class="panel" style="background:var(--raised);">
+    <div class="stat-label">Your integration point, in full</div>
+    <div class="mono" style="margin-top:var(--sp-2); line-height:1.7;">
+      from modelcicd.resolver import resolve<br>
+      model = resolve("support_bot_reply", fallback="gpt-4o-mini")
+    </div>
   </div>
-  <div class="panel">
-    <div class="stat-label">Quality protected too</div>
-    <p class="muted" style="margin:0;">Nothing is proposed without first being scored,
-      blind, against the rubric that feature's own owner wrote.</p>
-  </div>
-  <div class="panel">
-    <div class="stat-label">A record that outlives memory</div>
-    <p class="muted" style="margin:0;">Every run, candidate, score, and approval is saved
-      with a timestamp and the judge's stated reasoning.</p>
-  </div>
-  <div class="panel">
-    <div class="stat-label">One decision point</div>
-    <p class="muted" style="margin:0;">A human sees the evidence and clicks Approve.
-      Nothing about production changes silently.</p>
-  </div>
-</div>
 
-<h2>Getting started</h2>
-<ol class="stack-tight" style="margin:0 0 var(--sp-5); padding-left:18px;">
-  <li><strong>Connect an application</strong> — optionally with its repo, for scanning and
-    later patching.</li>
-  <li><strong>Find its AI features</strong> — scan the repo, or add one by hand through a
-    guided form. No YAML to write.</li>
-  <li><strong>Run the bench</strong> — the only step that spends money, and it shows the
-    cost and asks first.</li>
-  <li><strong>Review and approve</strong> — the leaderboard shows every candidate's real
-    answer and score. Nothing switches on its own.</li>
-</ol>
+  <div class="stat-grid" style="margin:var(--sp-4) 0;">
+    <div>
+      <div class="stat-label">Ranked within price tiers</div>
+      <p class="muted" style="margin:0;">A cheap candidate only competes against other
+        cheap candidates — "good enough for 10&times; less" stays a visible, defensible
+        answer, not a guess.</p>
+    </div>
+    <div>
+      <div class="stat-label">Quality gated first</div>
+      <p class="muted" style="margin:0;">Nothing is proposed without first being scored,
+        blind, against the rubric that feature's own owner wrote.</p>
+    </div>
+    <div>
+      <div class="stat-label">Proof, not memory</div>
+      <p class="muted" style="margin:0;">Every run, candidate, score, and approval is saved
+        with a timestamp and the judge's stated reasoning — "why are we using this model"
+        has an answer besides someone's recollection.</p>
+    </div>
+    <div>
+      <div class="stat-label">One decision point</div>
+      <p class="muted" style="margin:0;">A human sees the evidence and clicks Approve.
+        A silent model swap gets the same sign-off a dependency upgrade would.</p>
+    </div>
+  </div>
 
-<details class="panel">
-  <summary>Prefer the CLI? Every action above has an equivalent command</summary>
-  <p class="muted">Same tool, same files — either door always leaves the other consistent.</p>
+  <h3>Getting started</h3>
+  <ol class="stack-tight" style="margin:0 0 var(--sp-4); padding-left:18px;">
+    <li><strong>Connect an application</strong> — optionally with its repo, for scanning and
+      later patching.</li>
+    <li><strong>Find its AI features</strong> — scan the repo, or add one by hand through a
+      guided form. No YAML to write.</li>
+    <li><strong>Run the bench</strong> — the only step that spends money, and it shows the
+      cost and asks first.</li>
+    <li><strong>Review and approve</strong> — the leaderboard shows every candidate's real
+      answer and score. Nothing switches on its own.</li>
+  </ol>
+
+  <h3>Prefer the CLI?</h3>
+  <p class="muted">Every action above has an equivalent command — same tool, same files,
+    either door always leaves the other consistent.</p>
   <pre class="mono" style="overflow-x:auto; white-space:pre; margin:0; line-height:1.55;">{{ quickstart }}</pre>
 </details>
 {% endblock %}
