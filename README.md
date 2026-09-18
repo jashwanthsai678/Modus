@@ -244,7 +244,11 @@ anywhere else, and nothing about it is required to use the CLI. Think
   `resolve()` returns.
 - **Run detail page** — the leaderboard as a per-tier bar chart (score,
   price, would-ship rate on hover) with the full data table underneath it,
-  so nothing is chart-only.
+  so nothing is chart-only. Alongside the catalogue's price *ceiling*, each
+  row also shows what the run **actually spent** and **how long each call
+  took** — real numbers from that run's own token usage and wall clock, not
+  an estimate — plus a note when a candidate needed a retry to produce valid
+  JSON at all.
 
 `run` and `status` print the relevant dashboard link after they finish, so
 you don't have to know the URL scheme by heart.
@@ -355,7 +359,7 @@ under two different names was its own small source of confusion.
 |---|---|---|
 | `init` | free | Writes a starting `use_case.yaml` template |
 | `onboarding` | free | Prints the guided quickstart |
-| `set-key --provider {openrouter,groq,fireworks} [--key <value>]` | free | Saves a platform's API key to `.env` (prompts, hidden, if `--key` omitted) |
+| `set-key --provider {openrouter,groq,fireworks,openai} [--key <value>]` | free | Saves a platform's API key to `.env` (prompts, hidden, if `--key` omitted) |
 | `set-dashboard-key [--key <value>]` | free | Saves the key that protects the whole dashboard once it's reachable by more than localhost |
 | `keys` | free | Which platforms — and the dashboard itself — have a key configured |
 | `project create --name <n> [--description] [--notify-email] [--repo-path <dir> \| --repo-url <url>] [--providers <list>]` | free | Connects a new application |
@@ -602,6 +606,41 @@ stays true.
 
 ---
 
+## Real cost and latency — not the catalogue's price ceiling
+
+The catalogue's `price_out` is a *ceiling* — what a use case is willing to
+pay at most, used to filter candidates before anything is spent. It isn't
+what a run actually spent, and until now nothing measured that separately.
+
+Every generation call already carries the data for both: the platform's own
+`usage` block (real prompt/completion token counts) and the wall clock the
+sandbox was already timing internally. Neither was being kept.
+
+```
+        spent $0.0012, avg 2.4s/call, valid JSON on first try 75%
+```
+
+That third number — **structured-output validity** — comes from the same
+retry loop `client.py` always had: a model that returns malformed JSON gets
+asked again, up to three times, and until now nothing recorded whether an
+answer took one attempt or three. A candidate that needs a retry to produce
+usable output at all is a real reliability signal, separate from the
+rubric and from the deterministic checks above — this measures raw
+parseability, not content.
+
+**Real cost is priced against the specific host that was actually called**,
+not a cheapest-available aggregate — the same logical model can be hosted in
+more than one place at more than one price, and only the one that answered
+is the one that was paid for.
+
+**Both are `None`, not a guessed number, whenever they can't be measured** —
+a run served entirely from cache spent nothing new and timed nothing new, so
+it shows neither rather than repeating the original call's numbers. The
+leaderboard, the CLI's printed report, and the pending-candidate email all
+read the same values — one calculation, three places it shows up.
+
+---
+
 ## API keys — asked for in the interface, and actually used where they're set
 
 Each marketplace needs its own key. Instead of only hand-editing `.env`, the
@@ -621,13 +660,20 @@ one is set.
 **Setting a key is what makes selecting that platform real, not cosmetic.**
 Every candidate is now called through the platform it was actually
 discovered on — a Groq-sourced candidate hits Groq's own endpoint with
-`GROQ_API_KEY`, a Fireworks one hits Fireworks' with `FIREWORKS_API_KEY`,
-OpenRouter candidates work exactly as before. Before this, checking "Groq"
-only changed what showed up while *browsing* the catalogue; the actual bench
-call still always went to OpenRouter regardless. The judge is the one
-exception — it always calls through OpenRouter, regardless of which
-platform a candidate came from, since a use case's `judgeModel` is normally
-pinned as an OpenRouter-style id either way.
+`GROQ_API_KEY`, a Fireworks one hits Fireworks' with `FIREWORKS_API_KEY`, an
+OpenAI one hits OpenAI's with `OPENAI_API_KEY`, OpenRouter candidates work
+exactly as before. Before this, checking "Groq" only changed what showed up
+while *browsing* the catalogue; the actual bench call still always went to
+OpenRouter regardless. The judge is the one exception — it always calls
+through OpenRouter, regardless of which platform a candidate came from,
+since a use case's `judgeModel` is normally pinned as an OpenRouter-style id
+either way.
+
+OpenAI's own model list doesn't publish price the way OpenRouter's does, so
+its candidates are priced from a small, hand-maintained table of the current
+mainline models (`gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-4.1-mini`,
+`o4-mini`) — a model not in that table comes back unpriced and is excluded
+by the price guardrail, never guessed at.
 
 ---
 
@@ -641,6 +687,7 @@ write to this same file:
 | `OPENROUTER_API_KEY` | yes, for `run` | Every OpenRouter-sourced candidate and the judge are called through OpenRouter |
 | `GROQ_API_KEY` | only if a project searches Groq | Groq-sourced candidates are called through Groq directly |
 | `FIREWORKS_API_KEY` | only if a project searches Fireworks | Fireworks-sourced candidates are called through Fireworks directly |
+| `OPENAI_API_KEY` | only if a project searches OpenAI | OpenAI-sourced candidates are called through OpenAI directly |
 | `MODELCICD_NOTIFY_EMAIL` | no | Default recipient for pending-candidate emails, if not set per use case |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` / `SMTP_FROM` / `SMTP_STARTTLS` | no | If unset, the CLI prints the approve command instead of emailing it |
 | `MODELCICD_API_KEY` | no — but see [Protecting the dashboard](#protecting-the-dashboard-once-its-reachable-by-more-than-just-you) | Unset means the dashboard is wide open, same as always; set means every page and the API require it |
