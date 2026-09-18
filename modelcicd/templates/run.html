@@ -116,6 +116,11 @@
       combined (quality {{ '%.2f'|format(r.score) }}){% else %} / 5{% endif %} &middot; {{ r.model }}<br>
       price {% if r.price_out is not none %}${{ '%.2f'|format(r.price_out) }}/M{% else %}unknown{% endif %}
       &middot; would ship {% if r.wouldShipRate is not none %}{{ (r.wouldShipRate * 100)|round|int }}%{% else %}—{% endif %}
+      {% if r.get('costUsd') is not none or r.get('latencySeconds') is not none %}<br>
+      spent {% if r.get('costUsd') is not none %}${{ '%.4f'|format(r.costUsd) }}{% else %}—{% endif %}
+      &middot; {% if r.get('latencySeconds') is not none %}{{ '%.1f'|format(r.latencySeconds) }}s/call{% else %}—{% endif %}{% endif %}
+      {% if r.get('structuredValidityRate') is not none %}<br>valid JSON on first try
+      {{ (r.structuredValidityRate * 100)|round|int }}%{% endif %}
       {% if r.judgeSpread is not none %}<br>judge spread &plusmn;{{ '%.2f'|format(r.judgeSpread) }}
       across repeats{% endif %}
     </div>
@@ -130,15 +135,21 @@
 {% endif %}
 
 <table>
-  <tr><th>Model</th><th>Score</th>{% if price_sensitivity %}<th>Combined</th>{% endif %}<th>Price out</th><th>Would ship</th><th>Note</th></tr>
+  <tr><th>Model</th><th>Score</th>{% if price_sensitivity %}<th>Combined</th>{% endif %}<th>Price out</th>
+    <th>Actual cost</th><th>Latency</th><th>Would ship</th><th>Note</th></tr>
   {% for r in rows %}
-  {% set colspan = 6 if price_sensitivity else 5 %}
+  {% set colspan = 8 if price_sensitivity else 7 %}
   <tr class="{{ 'approved' if r.isApproved else '' }}{{ ' shortlisted' if r.model in ((board.shortlists or {}).get(tier) or []) else '' }}">
     <td>{{ r.model }}{% if r.isApproved %} <span class="badge approved">approved</span>{% endif %}
       {% if r.rateLimited %} <span class="badge pending">rate limited</span>{% endif %}</td>
     <td>{% if r.score is not none %}{{ '%.2f'|format(r.score) }}{% if r.judgeSpread is not none %}<span class="muted"> (&plusmn;{{ '%.2f'|format(r.judgeSpread) }} judge spread)</span>{% endif %}{% else %}—{% endif %}</td>
     {% if price_sensitivity %}<td>{% if r.get('combinedScore') is not none %}{{ '%.2f'|format(r.combinedScore) }}{% else %}—{% endif %}</td>{% endif %}
     <td>{% if r.price_out is not none %}${{ '%.2f'|format(r.price_out) }}/M{% else %}—{% endif %}</td>
+    {# Real spend, priced against the specific host actually called — not
+       the catalogue ceiling in the column to its left. None means the run
+       was served from cache, not that it cost nothing. #}
+    <td class="num">{% if r.get('costUsd') is not none %}${{ '%.4f'|format(r.costUsd) }}{% else %}—{% endif %}</td>
+    <td class="num">{% if r.get('latencySeconds') is not none %}{{ '%.1f'|format(r.latencySeconds) }}s{% else %}—{% endif %}</td>
     <td>{% if r.wouldShipRate is not none %}{{ (r.wouldShipRate * 100)|round|int }}%{% else %}—{% endif %}
       {# A failed deterministic check is the most actionable thing here — it
          names a broken integration, not a matter of taste — so it sits on
@@ -149,6 +160,13 @@
         {% else %}
         <span class="badge approved">all {{ r.assertions.passed }} checks passed</span>
         {% endif %}
+      {% endif %}
+      {# Distinct from the checks above — this is raw JSON/required-key
+         parseability from client.call_json's own retry loop, not a
+         user-authored assertion. A number here below 100% means the model
+         needed a retry to produce something usable at all. #}
+      {% if r.get('structuredValidityRate') is not none and r.structuredValidityRate < 1 %}
+      <span class="badge tie">{{ (r.structuredValidityRate * 100)|round|int }}% valid JSON on first try</span>
       {% endif %}
     </td>
     <td class="muted">{{ r.rateLimitNote or r.error or '' }}</td>

@@ -88,10 +88,11 @@ async def run_one(model_id: str, uc: UseCase, tc: TestCase, *,
     spec = _provider_spec(provider)
     call = _generation_call(model_id, uc, tc, provider)
     started = datetime.now(timezone.utc)
+    usage: dict = {}
     try:
         output = await client_module.call_json(
             call.pop("prompt"), label=f"sandbox[{model_id}:{tc.id}]",
-            api_key_env=spec["key_env"], cache=cache, **call)
+            api_key_env=spec["key_env"], cache=cache, usage_sink=usage, **call)
     except client_module.RateLimitedError as exc:
         # A REAL, OBSERVED signal — this candidate hit a rate limit during
         # even a light bench. Recorded distinctly from a generic failure so
@@ -106,7 +107,7 @@ async def run_one(model_id: str, uc: UseCase, tc: TestCase, *,
                 "error": str(exc)[:300]}
     return {"testCase": tc.id, "status": "ok",
             "seconds": (datetime.now(timezone.utc) - started).total_seconds(),
-            "output": output}
+            "usage": usage or None, "output": output}
 
 
 async def run_candidate(model_id: str, uc: UseCase, *,

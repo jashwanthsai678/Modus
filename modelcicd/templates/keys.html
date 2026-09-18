@@ -33,6 +33,12 @@
     <input id="fireworks_key" name="fireworks_key" type="password"
            placeholder="{{ 'leave blank to keep the current key' if key_status.fireworks else 'Fireworks API key' }}">
 
+    <label for="openai_key" style="margin-top: 16px;">OpenAI
+      <span class="badge {{ 'approved' if key_status.openai else 'none' }}" style="margin-left: 6px;">
+        {{ 'configured' if key_status.openai else 'not set' }}</span></label>
+    <input id="openai_key" name="openai_key" type="password"
+           placeholder="{{ 'leave blank to keep the current key' if key_status.openai else 'OpenAI API key' }}">
+
     <button type="submit" class="btn btn-primary" style="margin-top: 14px;">Save</button>
   </form>
 </div>

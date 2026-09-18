@@ -796,7 +796,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("onboarding", help="print the guided quickstart")
 
     sk = sub.add_parser("set-key", help="save a platform's API key to .env")
-    sk.add_argument("--provider", required=True, choices=["openrouter", "groq", "fireworks"])
+    sk.add_argument("--provider", required=True,
+                    choices=["openrouter", "groq", "fireworks", "openai"])
     sk.add_argument("--key", default=None, help="omit to be prompted (input hidden)")
 
     sub.add_parser("keys", help="which platforms (and the dashboard itself) have a key configured")

@@ -84,6 +84,36 @@ def test_provider_map_handles_an_empty_catalogue() -> None:
     check("None in, empty out", catalogue.provider_map(None) == {})
 
 
+def test_host_by_id_finds_the_specific_host_actually_called() -> None:
+    """Pricing a run's real cost needs the host that was actually called,
+    not the model-level cheapest aggregate — they can differ."""
+    cat = {"models": {
+        "llama": {"hosts": [{"id": "vendor/llama-cheap", "price_in": 0.05, "price_out": 0.10},
+                            {"id": "vendor/llama-pricey", "price_in": 0.50, "price_out": 1.00}]},
+    }}
+    host = catalogue.host_by_id(cat, "vendor/llama-pricey")
+    check("found the right host", host is not None and host["price_out"] == 1.00, f"{host}")
+    check("unknown id returns None", catalogue.host_by_id(cat, "vendor/nope") is None)
+    check("empty catalogue returns None", catalogue.host_by_id({}, "anything") is None)
+
+
+def test_rows_openai_marks_json_capable_and_prices_only_known_models() -> None:
+    """OpenAI's `/v1/models` publishes neither price nor a JSON-mode flag —
+    unlike Groq/Fireworks (which default `json_mode` False because it's
+    genuinely unconfirmed), OpenAI's chat models reliably support
+    `response_format: json_object`, so this normalizer asserts it rather
+    than guessing false and silently excluding every OpenAI candidate."""
+    rows = catalogue._rows_openai(
+        {"data": [{"id": "gpt-4o-mini"}, {"id": "some-future-model"}]})
+    by_id = {r["id"]: r for r in rows}
+    check("two rows", len(rows) == 2, f"{rows}")
+    check("json_mode asserted true", by_id["gpt-4o-mini"]["json_mode"] is True)
+    check("known model priced", by_id["gpt-4o-mini"]["price_out"] == 0.60, f"{by_id['gpt-4o-mini']}")
+    check("unknown model unpriced, not guessed",
+         by_id["some-future-model"]["price_in"] is None
+         and by_id["some-future-model"]["price_out"] is None)
+
+
 def test_distinct_models_never_merge() -> None:
     for a, b in (("openai/gpt-4o", "openai/gpt-4o-mini"),
                  ("deepseek/deepseek-chat", "deepseek/deepseek-r1")):
@@ -2433,7 +2463,9 @@ def test_the_run_page_warns_when_the_previous_run_used_a_different_stick() -> No
                "context": 128000, "wouldShipRate": 1.0, "counts": {"ok": 1},
                "error": None, "isApproved": False, "rateLimited": False,
                "rateLimitNote": None, "judgeSpread": None,
-               "candidateSpread": None, "assertions": None}
+               "candidateSpread": None, "assertions": None,
+               "latencySeconds": None, "costUsd": None,
+               "structuredValidityRate": None}
         for stamp, ran_at, fp in [("a", first, old_fp), ("b", second, new_fp)]:
             (out_dir / f"{stamp}_router.json").write_text(json.dumps({
                 "bench": {"results": [], "measurement": fp},
@@ -2852,6 +2884,95 @@ def test_a_feature_with_no_checks_reports_none_not_zero_failures() -> None:
           f"{row.get('assertions')}")
 
 
+def test_bench_aggregates_latency_tokens_and_structured_validity() -> None:
+    """`_judge_candidate` is the one place per-test-case `seconds`/`usage`
+    (from sandbox.run_one) get rolled up to a candidate-level fact — this is
+    what `rank.build` and the leaderboard actually read."""
+    import asyncio
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+
+    async def fake_call_json(*a, **k):
+        sink = k.get("usage_sink")
+        if sink is not None:
+            sink["promptTokens"] = 100
+            sink["completionTokens"] = 20
+            sink["attempts"] = 1
+        return {"reply": "ok", "scores": {c.id: 4 for c in uc.rubric}}
+
+    original = client.call_json
+    sandbox.client_module.call_json = fake_call_json
+    judge.client_module.call_json = fake_call_json
+    try:
+        result = asyncio.run(bench.run(["vendor/a"], uc, judge_model="judge/j"))
+    finally:
+        sandbox.client_module.call_json = original
+        judge.client_module.call_json = original
+    row = result["results"][0]
+    n = len(uc.test_cases)
+    check("latency measured", row.get("meanSeconds") is not None, f"{row.get('meanSeconds')}")
+    check("tokens summed across every test case",
+         row.get("tokens") == {"prompt": 100 * n, "completion": 20 * n}, f"{row.get('tokens')}")
+    check("all first-attempt -> 100% structured validity",
+         row.get("structuredValidityRate") == 1.0, f"{row.get('structuredValidityRate')}")
+
+
+def test_bench_reports_no_tokens_or_validity_when_nothing_was_measured() -> None:
+    """A judge-only monkeypatch that never sets usage_sink (the shape every
+    OTHER bench test in this file already uses) must not fabricate cost or
+    validity data that was never actually captured."""
+    import asyncio
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+
+    async def fake_call_json(*a, **k):
+        return {"reply": "ok", "scores": {c.id: 4 for c in uc.rubric}}
+
+    original = client.call_json
+    sandbox.client_module.call_json = fake_call_json
+    judge.client_module.call_json = fake_call_json
+    try:
+        result = asyncio.run(bench.run(["vendor/a"], uc, judge_model="judge/j"))
+    finally:
+        sandbox.client_module.call_json = original
+        judge.client_module.call_json = original
+    row = result["results"][0]
+    check("no tokens fabricated", row.get("tokens") is None, f"{row.get('tokens')}")
+    check("no validity rate fabricated",
+         row.get("structuredValidityRate") is None, f"{row.get('structuredValidityRate')}")
+
+
+def _only_row(board: dict) -> dict:
+    """The one row on a board built from a single-entry bench result,
+    whichever price tier a real catalogue happened to sort it into."""
+    for band in board["tiers"].values():
+        if band:
+            return band[0]
+    raise AssertionError(f"no rows at all: {board}")
+
+
+def test_rank_build_computes_real_cost_against_the_actual_host_called() -> None:
+    cat = {"models": {"m": model(key="m", price_in=0.50, price_out=1.00)}}
+    entry = {"model": "vendor/m", "mean": 4.0, "wouldShipRate": 1.0,
+            "counts": {"ok": 1}, "testCases": [],
+            "tokens": {"prompt": 1000, "completion": 500}}
+    row = _only_row(rank.build(_bench(entry), cat))
+    # 1000 prompt tokens @ $0.50/M + 500 completion tokens @ $1.00/M = $0.001
+    check("cost priced against the real host", row["costUsd"] == 0.001, f"{row['costUsd']}")
+
+
+def test_rank_build_cost_is_none_not_guessed_when_unmeasured() -> None:
+    cat = {"models": {"m": model(key="m", price_in=0.50, price_out=1.00)}}
+    no_tokens = {"model": "vendor/m", "mean": 4.0, "wouldShipRate": 1.0,
+                "counts": {"ok": 1}, "testCases": []}
+    check("no tokens measured -> no cost",
+         _only_row(rank.build(_bench(no_tokens), cat))["costUsd"] is None)
+
+    with_tokens = {"model": "vendor/m", "mean": 4.0, "wouldShipRate": 1.0,
+                  "counts": {"ok": 1}, "testCases": [],
+                  "tokens": {"prompt": 100, "completion": 50}}
+    check("no catalogue -> no guessed cost",
+         _only_row(rank.build(_bench(with_tokens), None))["costUsd"] is None)
+
+
 # ── cache: what it keys on, what it refuses to serve, and who must never
 #    be handed one ─────────────────────────────────────────────────────────
 
@@ -2874,7 +2995,15 @@ class _FakeHttpx:
     to prove a cache HIT skipped it."""
     posts: list = []
     content = '{"answer": "hello"}'
+    # A per-call sequence of bodies, consumed one per `post()` — lets a test
+    # simulate "invalid JSON, then valid on retry" to prove `attempts` in
+    # `usage_sink` reflects which try actually succeeded. None (the default)
+    # means every call gets `content`, unchanged from before this existed.
+    contents = None
     status = 200
+    # Included on every response's `usage` field; None means the fake body
+    # simply has no usage block, same as a provider that omits it.
+    usage = None
 
     class AsyncClient:
         def __init__(self, *a, **k) -> None:
@@ -2888,17 +3017,22 @@ class _FakeHttpx:
 
         async def post(self, url, **kwargs):
             _FakeHttpx.posts.append({"url": url, **kwargs})
+            content = (_FakeHttpx.contents.pop(0) if _FakeHttpx.contents
+                      else _FakeHttpx.content)
             return _FakeResponse(
-                {"choices": [{"message": {"content": _FakeHttpx.content},
-                              "finish_reason": "stop"}]},
+                {"choices": [{"message": {"content": content},
+                              "finish_reason": "stop"}],
+                 "usage": _FakeHttpx.usage},
                 status=_FakeHttpx.status)
 
 
 class _NoNetwork:
     """Installs the fake httpx and a dummy API key for the duration."""
 
-    def __init__(self, *, content: str = '{"answer": "hello"}', status: int = 200) -> None:
+    def __init__(self, *, content: str = '{"answer": "hello"}', status: int = 200,
+                contents=None, usage=None) -> None:
         self.content, self.status = content, status
+        self.contents, self.usage = contents, usage
 
     def __enter__(self):
         import os
@@ -2906,6 +3040,8 @@ class _NoNetwork:
         sys.modules["httpx"] = _FakeHttpx
         _FakeHttpx.posts = []
         _FakeHttpx.content, _FakeHttpx.status = self.content, self.status
+        _FakeHttpx.contents = list(self.contents) if self.contents else None
+        _FakeHttpx.usage = self.usage
         self._key = os.environ.get("OPENROUTER_API_KEY")
         os.environ["OPENROUTER_API_KEY"] = "test-key"
         return _FakeHttpx
@@ -3048,6 +3184,56 @@ def test_call_json_never_caches_a_response_missing_required_keys() -> None:
         except RuntimeError:
             check("a missing required key raises", True)
     check("nothing was stored", c.writes == 0, f"{c.writes}")
+
+
+# ── client: usage_sink — cost and structured-output validity read off it ────
+
+def test_usage_sink_filled_on_a_genuine_success() -> None:
+    import asyncio
+    with _NoNetwork(usage={"prompt_tokens": 120, "completion_tokens": 45}):
+        sink: dict = {}
+        asyncio.run(client.call_json("hi", model="vendor/m", label="t", usage_sink=sink))
+    check("prompt tokens captured", sink.get("promptTokens") == 120, f"{sink}")
+    check("completion tokens captured", sink.get("completionTokens") == 45, f"{sink}")
+    check("succeeded on the first attempt", sink.get("attempts") == 1, f"{sink}")
+
+
+def test_usage_sink_records_which_attempt_actually_succeeded() -> None:
+    """A model that returns garbage once and valid JSON on retry used 2
+    attempts — this is the raw signal `structuredValidityRate` reads."""
+    import asyncio
+    with _NoNetwork(contents=["not json at all", '{"answer": "hello"}'],
+                    usage={"prompt_tokens": 10, "completion_tokens": 5}) as fake:
+        sink: dict = {}
+        asyncio.run(client.call_json("hi", model="vendor/m", label="t", usage_sink=sink))
+    check("two calls were made", len(fake.posts) == 2, f"{len(fake.posts)}")
+    check("attempts reflects the retry", sink.get("attempts") == 2, f"{sink}")
+
+
+def test_usage_sink_untouched_on_a_cache_hit() -> None:
+    """A replayed answer cost nothing new — `usage_sink` must stay empty
+    rather than reporting the ORIGINAL call's spend a second time."""
+    import asyncio
+    tmp = Path(tempfile.mkdtemp())
+    c = cache.Cache(tmp)
+    with _NoNetwork(usage={"prompt_tokens": 100, "completion_tokens": 50}):
+        kwargs = dict(model="vendor/m", label="t")
+        asyncio.run(client.call_json("hi", cache=c, **kwargs))
+        sink: dict = {}
+        asyncio.run(client.call_json("hi", cache=c, usage_sink=sink, **kwargs))
+    check("cache hit leaves usage_sink empty", sink == {}, f"{sink}")
+
+
+def test_usage_sink_defaults_to_none_missing_from_the_response() -> None:
+    """A provider that omits `usage` entirely must not raise, and the sink's
+    fields come back None rather than a guessed number."""
+    import asyncio
+    with _NoNetwork():
+        sink: dict = {}
+        asyncio.run(client.call_json("hi", model="vendor/m", label="t", usage_sink=sink))
+    check("no token counts fabricated",
+         sink.get("promptTokens") is None and sink.get("completionTokens") is None, f"{sink}")
+    check("attempts still recorded", sink.get("attempts") == 1, f"{sink}")
 
 
 def test_cost_preview_agrees_with_what_the_run_will_actually_reuse() -> None:

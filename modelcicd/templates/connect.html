@@ -71,6 +71,14 @@
     </div>
     <input name="fireworks_key" type="password" placeholder="{{ 'leave blank to keep the current key' if key_status.fireworks else 'Fireworks API key' }}">
 
+    <div class="checkline" style="margin-top: 14px;">
+      <input id="prov-openai" name="providers" type="checkbox" value="openai">
+      <label for="prov-openai" style="margin:0;">OpenAI</label>
+      <span class="badge {{ 'approved' if key_status.openai else 'none' }}" style="margin-left: 8px;">
+        {{ 'key configured' if key_status.openai else 'no key yet' }}</span>
+    </div>
+    <input name="openai_key" type="password" placeholder="{{ 'leave blank to keep the current key' if key_status.openai else 'OpenAI API key' }}">
+
     <button type="submit" class="btn btn-primary" style="margin-top: 14px;">Connect</button>
   </form>
 </div>

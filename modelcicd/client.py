@@ -90,7 +90,7 @@ async def call_json(prompt: str, *, model: str, label: str,
                     system: Optional[str] = None, required: tuple = (),
                     temperature: float = 0.4, max_tokens: int = 1500,
                     attempts: int = 3, timeout_s: float = 60.0,
-                    cache=None) -> dict:
+                    cache=None, usage_sink: Optional[dict] = None) -> dict:
     """One JSON-returning call. Raises with the label attached on final failure.
 
     RETRIED WITH THE ERROR SHOWN BACK. A parse failure is a normal event on a
@@ -117,6 +117,14 @@ async def call_json(prompt: str, *, model: str, label: str,
     check on the one path that returns — a rate limit, a parse failure, a
     timeout, an HTTP error all leave the cache untouched and get retried on
     the next run. Caching a failure would pin a candidate to a bad afternoon.
+
+    `usage_sink`, WHEN GIVEN, IS FILLED ON A GENUINE SUCCESS ONLY — never on
+    a cache hit (nothing was actually bought) and never on failure. Carries
+    `promptTokens`/`completionTokens` straight from the platform's own
+    `usage` block (every provider here is OpenAI-compatible, so the shape is
+    the same one across all of them) and `attempts`, the 1-based try this
+    succeeded on — a model that needed a retry to produce valid JSON is a
+    real reliability signal, currently invisible to every caller.
     """
     import httpx
 
@@ -166,6 +174,11 @@ async def call_json(prompt: str, *, model: str, label: str,
                     raise ValueError(f"missing required key(s): {missing}")
                 if cache is not None and cache_key:
                     cache.put(cache_key, data, model=model)
+                if usage_sink is not None:
+                    usage = payload.get("usage") or {}
+                    usage_sink["promptTokens"] = usage.get("prompt_tokens")
+                    usage_sink["completionTokens"] = usage.get("completion_tokens")
+                    usage_sink["attempts"] = attempt
                 return data
             except (RateLimitedError, ModelUnavailableError):
                 # Fail fast — retrying immediately just hits the same limit

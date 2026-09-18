@@ -51,8 +51,35 @@ async def _judge_candidate(model_id: str, sandboxed: dict, judge_model: str,
             "answersChecked": len(with_checks),
         }
 
+    # LATENCY: `seconds` is on every judged entry regardless of outcome
+    # (sandbox.run_one times the call whether it succeeded or not), so the
+    # mean reflects real wall clock, including whatever a candidate's
+    # failures cost.
+    timed = [j["seconds"] for j in judged if j.get("seconds") is not None]
+    mean_seconds = round(sum(timed) / len(timed), 3) if timed else None
+
+    # COST AND STRUCTURED-OUTPUT VALIDITY both come from `usage`, which is
+    # only ever set on a genuine (non-cached, successful) generation call —
+    # see client.call_json's usage_sink. A run served entirely from cache
+    # has no usage anywhere, and both of these are correctly None rather
+    # than a guessed number.
+    with_usage = [j["usage"] for j in judged if j.get("usage")]
+    tokens = None
+    if with_usage:
+        prompt_tokens = [u["promptTokens"] for u in with_usage if u.get("promptTokens") is not None]
+        completion_tokens = [u["completionTokens"] for u in with_usage
+                             if u.get("completionTokens") is not None]
+        if prompt_tokens or completion_tokens:
+            tokens = {"prompt": sum(prompt_tokens), "completion": sum(completion_tokens)}
+    with_attempts = [u["attempts"] for u in with_usage if u.get("attempts") is not None]
+    structured_validity_rate = (round(sum(1 for a in with_attempts if a == 1)
+                                      / len(with_attempts), 3)
+                                if with_attempts else None)
+
     return {"model": model_id, "testCases": list(judged),
             "mean": mean, "assertions": assertion_summary,
+            "meanSeconds": mean_seconds, "tokens": tokens,
+            "structuredValidityRate": structured_validity_rate,
             "wouldShipRate":
                 round(sum(1 for j in scored if j.get("wouldShip")) / len(scored), 3)
                 if scored else None,

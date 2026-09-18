@@ -28,6 +28,21 @@ def _rate_limit_note(rate_limited_count: int, estimated_calls_per_day: Optional[
     return f"rate limited during this bench ({rate_limited_count} call(s))"
 
 
+def _cost_usd(tokens: Optional[dict], host: Optional[dict]) -> Optional[float]:
+    """What this candidate's generation calls actually cost, priced against
+    the SPECIFIC host that was called — never the model-level cheapest-host
+    aggregate, which can be a different, untested host. None whenever either
+    side is unknown, same "unknown never resolves favorably" rule as the
+    price guardrail."""
+    if not tokens or not host:
+        return None
+    price_in, price_out = host.get("price_in"), host.get("price_out")
+    if price_in is None or price_out is None:
+        return None
+    return round(tokens["prompt"] / 1_000_000 * price_in
+                + tokens["completion"] / 1_000_000 * price_out, 6)
+
+
 def build(bench_result: dict, catalogue: Optional[dict] = None,
          approved_model: Optional[str] = None, *,
          estimated_calls_per_day: Optional[int] = None) -> dict:
@@ -36,6 +51,7 @@ def build(bench_result: dict, catalogue: Optional[dict] = None,
     for entry in bench_result.get("results") or []:
         model_id = entry["model"]
         meta = models.get(catalogue_module.key(model_id)) or {}
+        host = catalogue_module.host_by_id(catalogue, model_id)
         rate_limited_count = (entry.get("counts") or {}).get("rate_limited", 0)
         rows.append({
             "model": model_id,
@@ -45,6 +61,13 @@ def build(bench_result: dict, catalogue: Optional[dict] = None,
             "score": entry.get("mean"),
             "wouldShipRate": entry.get("wouldShipRate"),
             "counts": entry.get("counts"),
+            # Real, not the catalogue ceiling — from actual token usage
+            # against the actual host called. None when either side is
+            # unmeasured/unknown (e.g. every call was served from cache), not
+            # a guessed number.
+            "latencySeconds": entry.get("meanSeconds"),
+            "costUsd": _cost_usd(entry.get("tokens"), host),
+            "structuredValidityRate": entry.get("structuredValidityRate"),
             # The deterministic checks, summarized on the row. None means
             # this feature configured none — NOT that everything passed.
             # A leaderboard that shows "0 failed" for a feature with no
@@ -222,6 +245,15 @@ def report(board: dict) -> str:
             lines.append(f"  {flag}{i:>3}  {r['model']:<44} {r['score']:.2f}  "
                          f"{price:>9}  ship={r.get('wouldShipRate', 0):.0%}{approved}"
                          f"{spread}{cand_spread}")
+            # Real spend and real wall clock, when measured — a run served
+            # entirely from cache has neither, and the line is skipped
+            # rather than printing a guessed cost or a stale latency.
+            if r.get("costUsd") is not None or r.get("latencySeconds") is not None:
+                cost = f"${r['costUsd']:.4f}" if r.get("costUsd") is not None else "  -  "
+                latency = f"{r['latencySeconds']:.1f}s" if r.get("latencySeconds") is not None else "  -  "
+                validity = (f", valid JSON on first try {r['structuredValidityRate']:.0%}"
+                           if r.get("structuredValidityRate") is not None else "")
+                lines.append(f"        spent {cost}, avg {latency}/call{validity}")
             # Said on its own line, not squeezed into the row: a failed
             # deterministic check is the most actionable thing on a
             # leaderboard — it names a broken integration rather than a

@@ -44,6 +44,23 @@ PROVIDERS = {
     "fireworks": {"url": "https://api.fireworks.ai/inference/v1/models",
                   "chat_url": "https://api.fireworks.ai/inference/v1/chat/completions",
                   "key_env": "FIREWORKS_API_KEY", "needs_key": True},
+    "openai": {"url": "https://api.openai.com/v1/models",
+               "chat_url": "https://api.openai.com/v1/chat/completions",
+               "key_env": "OPENAI_API_KEY", "needs_key": True},
+}
+
+# OpenAI's own `/v1/models` does not publish price the way OpenRouter's does
+# — this is hand-maintained and WILL drift as OpenAI changes its list, the
+# same honesty tradeoff as every other approximation in this file. A model
+# missing here gets `price_in`/`price_out` of `None`, and is excluded by the
+# price guardrail like any other unpriced candidate — never silently priced
+# at zero. $ per 1M tokens: (input, output).
+_OPENAI_PRICES = {
+    "gpt-4o": (2.50, 10.00),
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4.1": (2.00, 8.00),
+    "gpt-4.1-mini": (0.40, 1.60),
+    "o4-mini": (1.10, 4.40),
 }
 
 # Suffixes that describe ROUTING or PACKAGING, stripped when forming the
@@ -128,6 +145,32 @@ def _rows_openai_compatible(provider: str, payload: dict) -> list:
     return out
 
 
+def _rows_openai(payload: dict) -> list:
+    """OpenAI's own `/v1/models` — like Groq/Fireworks, `{"data": [{"id":
+    ...}]}` with no price and no context-length field worth trusting (it
+    lists fine-tunes, audio, embedding and moderation models in the same
+    list as chat models, with nothing that reliably distinguishes them).
+    UNLIKE Groq/Fireworks, `json_mode` is set `True` unconditionally — every
+    current OpenAI chat model supports `response_format: json_object`, so
+    reusing `_rows_openai_compatible`'s conservative `False` here would
+    silently exclude every OpenAI candidate at the `require_json` guardrail.
+    Price comes from `_OPENAI_PRICES`, `None` (and so excluded downstream)
+    for anything not in that hand-maintained table."""
+    out = []
+    for m in payload.get("data") or []:
+        model_id = m.get("id")
+        if not model_id:
+            continue
+        price_in, price_out = _OPENAI_PRICES.get(model_id, (None, None))
+        out.append({
+            "provider": "openai", "id": model_id, "name": model_id,
+            "context": None, "price_in": price_in, "price_out": price_out,
+            "input_modalities": ["text"], "output_modalities": ["text"],
+            "json_mode": True,
+        })
+    return out
+
+
 def fetch(provider: str, *, timeout: float = 20.0) -> list:
     """One platform's catalogue. Returns [] and says why on failure — a platform
     being down must not take the whole poll with it."""
@@ -150,8 +193,12 @@ def fetch(provider: str, *, timeout: float = 20.0) -> list:
     except Exception as exc:                        # noqa: BLE001
         print(f"[modelcicd] {provider}: catalogue unreachable ({str(exc)[:140]})")
         return []
-    normalize = (_rows_openrouter if provider == "openrouter"
-                else lambda p: _rows_openai_compatible(provider, p))
+    if provider == "openrouter":
+        normalize = _rows_openrouter
+    elif provider == "openai":
+        normalize = _rows_openai
+    else:
+        normalize = lambda p: _rows_openai_compatible(provider, p)
     return [r for r in normalize(payload) if r.get("id")]
 
 
@@ -188,6 +235,21 @@ def cheapest_host_id(model: dict) -> Optional[str]:
     hosts = [h for h in model.get("hosts") or [] if h.get("price_out") is not None]
     hosts.sort(key=lambda h: h["price_out"])
     return hosts[0]["id"] if hosts else None
+
+
+def host_by_id(cat: dict, model_id: str) -> Optional[dict]:
+    """The specific host entry a candidate id resolves to — its own price,
+    not the model-level `cheapest_out` aggregate. A logical model can be
+    hosted in more than one place at more than one price; `cheapest_out` is
+    right for the guardrail's display ceiling, but pricing what a run
+    actually SPENT needs the price of the host that was actually called,
+    which may not be the cheapest one on record (e.g. a candidate named
+    directly via `--models`, bypassing the cheapest-host selection)."""
+    for model in (cat or {}).get("models", {}).values():
+        for host in model.get("hosts") or []:
+            if host.get("id") == model_id:
+                return host
+    return None
 
 
 def provider_map(cat: dict) -> dict:
