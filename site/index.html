@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Modus — evidence-based LLM selection for your app</title>
+<meta name="description" content="Modus continuously discovers models, benchmarks each one against your own feature's test cases, and asks a human before production changes. Self-hosted, free, no signup.">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 22'%3E%3Crect x='1.5' y='12.5' width='4.2' height='8' rx='1.2' fill='%23667085'/%3E%3Crect x='7.4' y='8' width='4.2' height='12.5' rx='1.2' fill='%232563eb'/%3E%3Crect x='13.3' y='3.2' width='4.2' height='17.3' rx='1.2' fill='%23d7dfea'/%3E%3Ccircle cx='17.6' cy='4.6' r='4.4' fill='%23f7f9fc'/%3E%3Ccircle cx='17.6' cy='4.6' r='3.6' fill='%2312833f'/%3E%3Cpath d='M15.9 4.6l1.1 1.1 2-2.2' stroke='%23fff' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E">
+
+<meta property="og:title" content="Modus — evidence-based LLM selection for your app">
+<meta property="og:description" content="Continuously discovers models, benchmarks each one against your own feature's test cases, and asks a human before production changes.">
+<meta property="og:type" content="website">
+
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="site-nav">
+  <div class="wrap">
+    <a href="#" class="brand" aria-label="Modus">
+      <svg width="24" height="24" viewBox="0 0 22 22" aria-hidden="true">
+        <rect x="1.5" y="12.5" width="4.2" height="8" rx="1.2" fill="var(--muted)"/>
+        <rect x="7.4" y="8" width="4.2" height="12.5" rx="1.2" fill="var(--accent-bright)"/>
+        <rect x="13.3" y="3.2" width="4.2" height="17.3" rx="1.2" fill="var(--border)"/>
+        <circle cx="17.6" cy="4.6" r="4.4" fill="var(--bg)"/>
+        <circle cx="17.6" cy="4.6" r="3.6" fill="var(--green)"/>
+        <path d="M15.9 4.6l1.1 1.1 2-2.2" stroke="#fff" stroke-width="1.3"
+              stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      </svg>
+      <span class="brand-name">Modus</span>
+    </a>
+    <a class="btn btn-primary" href="https://github.com/jashwanthsai678/Modus" target="_blank" rel="noopener">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38
+                 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13
+                 -.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07
+                 -1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12
+                 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27
+                 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15
+                 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2
+                 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/>
+      </svg>
+      <span class="nav-btn-full">View on GitHub</span><span class="nav-btn-short">GitHub</span>
+    </a>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <span class="eyebrow">Self-hosted &middot; Apache 2.0 &middot; No signup</span>
+    <h1>Know which model your app should use &mdash; <span class="accent">with proof, not vibes.</span></h1>
+    <p class="lede">Modus continuously discovers new LLMs, benchmarks each one against
+      <em>your own feature's</em> test cases and rubric, and never changes what your
+      application uses in production until a human explicitly says yes.</p>
+    <div class="ctas">
+      <a class="btn btn-primary btn-lg" href="https://github.com/jashwanthsai678/Modus" target="_blank" rel="noopener">
+        Get it on GitHub &rarr;
+      </a>
+      <a class="btn btn-lg" href="#how-it-works">See how it works</a>
+    </div>
+    <p class="fineprint">Clone it, run one Python command, point it at your app. No database, no cloud account.</p>
+
+    <div class="snippet">
+      <div class="snippet-bar"><span></span><span></span><span></span></div>
+      <pre><span class="kw">from</span> modelcicd.resolver <span class="kw">import</span> resolve
+
+model = resolve(<span class="st">"support_bot_reply"</span>, fallback=<span class="st">"gpt-4o-mini"</span>)
+<span class="cm"># call your existing LLM client with `model`, exactly as before</span></pre>
+    </div>
+  </div>
+</section>
+
+<section class="problem">
+  <div class="wrap">
+    <div class="section-head center">
+      <span class="section-kicker">The problem</span>
+      <h2>New models ship every few weeks. Nobody re-benchmarks forty candidates by hand.</h2>
+    </div>
+    <div class="problem-grid">
+      <div class="problem-card">
+        <span class="num">01</span>
+        <p><strong>You overpay without knowing it.</strong> The model you picked eight
+          months ago is still what your app calls &mdash; even though three cheaper
+          ones have since matched it.</p>
+      </div>
+      <div class="problem-card">
+        <span class="num">02</span>
+        <p><strong>A score moving doesn't tell you why.</strong> A prompt edit and an
+          actual model regression look identical on a bare trend line &mdash; unless
+          something is tracking what changed.</p>
+      </div>
+      <div class="problem-card">
+        <span class="num">03</span>
+        <p><strong>Checking is the part nobody has time for.</strong> The only way to
+          find out if something better exists is a person manually re-running the
+          comparison &mdash; so it just doesn't happen.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="how-it-works">
+  <div class="wrap">
+    <div class="section-head center">
+      <span class="section-kicker">How it works</span>
+      <h2>Discovery and evaluation run automatically. Deployment doesn't.</h2>
+      <p>Everything up to a decision happens on its own, on whatever schedule you
+        choose. The moment your application's actual behavior would change, it
+        stops and asks a person.</p>
+    </div>
+    <div class="pipeline">
+      <div class="step">
+        <h3>Discover</h3>
+        <p>Polls every model and its price, right now &mdash; not whatever was true
+          when you last looked.</p>
+        <span class="cost">free &middot; no model call</span>
+      </div>
+      <div class="step">
+        <h3>Guardrail</h3>
+        <p>Filters by this feature's own price ceiling, context length, JSON-mode
+          need, and modality.</p>
+        <span class="cost">free</span>
+      </div>
+      <div class="step">
+        <h3>Sandbox</h3>
+        <p>Runs every surviving candidate against <em>this feature's own</em> test
+          cases &mdash; one real call each.</p>
+        <span class="cost is-paid">$ &middot; real tokens, timed</span>
+      </div>
+      <div class="step">
+        <h3>Judge</h3>
+        <p>A separate, pinned model scores every answer against your rubric,
+          blind &mdash; never told which model wrote it.</p>
+        <span class="cost is-paid">$</span>
+      </div>
+      <div class="step">
+        <h3>Rank</h3>
+        <p>Leaderboard within price tiers, so "good enough for 10&times; less" is a
+          visible, defensible answer.</p>
+        <span class="cost">free</span>
+      </div>
+      <div class="step">
+        <h3>Flag</h3>
+        <p>A candidate that clearly beats what's approved is marked
+          <strong>pending</strong>. Production hasn't changed yet.</p>
+        <span class="cost">free</span>
+      </div>
+      <div class="step is-gate">
+        <h3>Approve</h3>
+        <p>The one human click that promotes a model. Only after this does your
+          app's <code class="mono">resolve()</code> call return the new id.</p>
+        <span class="cost">you decide</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="proof">
+  <div class="wrap">
+    <div class="section-head center">
+      <span class="section-kicker">Not just a score</span>
+      <h2>Every number comes with the evidence behind it</h2>
+      <p>Real answer, real judge reasoning, real price, real cost, real latency &mdash;
+        saved with a timestamp, per candidate, per test case. Nothing is chart-only.</p>
+    </div>
+    <div class="proof-shot">
+      <img src="assets/img/leaderboard.png" alt="Modus leaderboard for one AI feature, showing four candidate models ranked by score with price, actual cost, latency, and would-ship rate columns, plus an expandable panel with the model's real answer">
+    </div>
+    <p class="proof-caption">A real leaderboard from this repo's own test project &mdash; every row expands to the model's actual answer and the judge's stated reasoning.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="section-head center">
+      <span class="section-kicker">Why it's built this way</span>
+      <h2>Six decisions that aren't the obvious default</h2>
+    </div>
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="icon">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="2" width="6" height="6" rx="1"/><rect x="10" y="2" width="6" height="6" rx="1"/><rect x="2" y="10" width="6" height="6" rx="1"/><rect x="10" y="10" width="6" height="6" rx="1"/></svg>
+        </div>
+        <h3>Per feature, not per model</h3>
+        <p>Each LLM call site gets its own test cases, its own rubric, its own
+          approved model. No global leaderboard pretending one model wins
+          everything.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 9l4 4 8-9"/></svg>
+        </div>
+        <h3>Proof, not just scores</h3>
+        <p>Every score comes with the candidate's real answer and the judge's
+          stated reasoning, saved with a timestamp &mdash; not a number you
+          have to trust blind.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="8" width="10" height="7" rx="1.5"/><path d="M6.5 8V5.5a2.5 2.5 0 0 1 5 0V8"/></svg>
+        </div>
+        <h3>Two human gates, not one</h3>
+        <p><code class="mono">resolve()</code> keeps returning the old model
+          until a human approves. Patching real source code is a second,
+          separate confirmation.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M9 2v14M4 6l5-4 5 4M4 12l5 4 5-4"/></svg>
+        </div>
+        <h3>Real cost, latency &amp; validity</h3>
+        <p>Priced against the exact host that was actually called, not a
+          catalogue estimate &mdash; plus whether a model needed a retry to
+          produce usable JSON at all.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="9" cy="9" r="7"/><path d="M9 5v4l3 2"/></svg>
+        </div>
+        <h3>Multi-provider, for real</h3>
+        <p>OpenRouter, Groq, Fireworks, and OpenAI &mdash; each candidate is
+          called through the exact platform it was discovered on, not
+          silently rerouted.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2.5" y="3" width="13" height="12" rx="1.5"/><path d="M2.5 7h13"/></svg>
+        </div>
+        <h3>Self-hosted, flat files</h3>
+        <p>No database, no signup, no data leaving your machine. State is
+          JSON and YAML you can read, diff, and commit.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="quickstart">
+  <div class="wrap">
+    <div class="qs-grid">
+      <div>
+        <div class="section-head">
+          <span class="section-kicker">Quickstart</span>
+          <h2>Five minutes to your first leaderboard</h2>
+          <p>Everything runs locally. The only command that spends anything is
+            <code class="mono">run</code> &mdash; and it shows the cost and asks
+            first.</p>
+        </div>
+        <div class="qs-steps">
+          <div class="qs-step">
+            <span class="n">1</span>
+            <div><h4>Install &amp; configure</h4><p>Clone the repo, create a venv, set one API key.</p></div>
+          </div>
+          <div class="qs-step">
+            <span class="n">2</span>
+            <div><h4>Write a use case</h4><p>Or copy the example under <code class="mono">examples/</code>.</p></div>
+          </div>
+          <div class="qs-step">
+            <span class="n">3</span>
+            <div><h4>Run the bench</h4><p>See the exact candidate list and cost before anything is spent.</p></div>
+          </div>
+          <div class="qs-step">
+            <span class="n">4</span>
+            <div><h4>Approve, from the CLI or the dashboard</h4><p>The only action that changes what your app receives.</p></div>
+          </div>
+        </div>
+      </div>
+      <div class="qs-code">
+        <pre><span class="cm"># 1. Install</span>
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+<span class="cm"># 2. Configure</span>
+cp .env.example .env
+<span class="cm"># set OPENROUTER_API_KEY, or add it later</span>
+<span class="cm"># from the dashboard</span>
+
+<span class="cm"># 3. Write a use case</span>
+python -m modelcicd.cli init \
+  --out feature.yaml
+
+<span class="cm"># 4. Free preview &mdash; no model calls yet</span>
+python -m modelcicd.cli shortlist \
+  --use-case feature.yaml
+
+<span class="cm"># 5. Run the bench &mdash; shows cost, asks first</span>
+python -m modelcicd.cli run \
+  --use-case feature.yaml
+
+<span class="cm"># 6. Approve, or open the dashboard</span>
+python -m modelcicd.cli approve \
+  --use-case feature.yaml
+python -m modelcicd.cli ui</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="cta-final">
+  <div class="wrap">
+    <h2>Stop re-checking the model market by hand.</h2>
+    <p>Free, self-hosted, and the whole integration surface is one function call.
+      Everything else in the repo exists to answer one question well.</p>
+    <div class="ctas">
+      <a class="btn btn-primary btn-lg" href="https://github.com/jashwanthsai678/Modus" target="_blank" rel="noopener">
+        View the repo &rarr;
+      </a>
+      <a class="btn btn-lg" href="https://github.com/jashwanthsai678/Modus#readme" target="_blank" rel="noopener">
+        Read the docs
+      </a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-brand">
+      <svg width="18" height="18" viewBox="0 0 22 22" aria-hidden="true">
+        <rect x="1.5" y="12.5" width="4.2" height="8" rx="1.2" fill="var(--muted)"/>
+        <rect x="7.4" y="8" width="4.2" height="12.5" rx="1.2" fill="var(--accent-bright)"/>
+        <rect x="13.3" y="3.2" width="4.2" height="17.3" rx="1.2" fill="var(--border)"/>
+        <circle cx="17.6" cy="4.6" r="4.4" fill="var(--bg)"/>
+        <circle cx="17.6" cy="4.6" r="3.6" fill="var(--green)"/>
+        <path d="M15.9 4.6l1.1 1.1 2-2.2" stroke="#fff" stroke-width="1.3"
+              stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      </svg>
+      <span class="license">Modus &middot; Apache 2.0</span>
+    </div>
+    <div class="foot-links">
+      <a class="muted-link" href="https://github.com/jashwanthsai678/Modus" target="_blank" rel="noopener">GitHub</a>
+      <a class="muted-link" href="https://github.com/jashwanthsai678/Modus/blob/main/docs/GUIDE.md" target="_blank" rel="noopener">Feature guide</a>
+      <a class="muted-link" href="https://github.com/jashwanthsai678/Modus/blob/main/docs/DESIGN.md" target="_blank" rel="noopener">Design notes</a>
+      <a class="muted-link" href="https://github.com/jashwanthsai678/Modus/blob/main/LICENSE" target="_blank" rel="noopener">License</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
