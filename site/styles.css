@@ -106,6 +106,13 @@ section:first-of-type { border-top: none; }
   body { font-size: 17px; }
   section { padding: var(--sp-7) 0; }
 }
+@media (max-width: 480px) {
+  .title-block .lede, .section-head p, .prose-item p, .deflist dd, .closing p {
+    font-size: 17px;
+  }
+  .title-block h1 { font-size: 28px; }
+  .kicker { font-size: 16px; }
+}
 
 .sans { font-family: var(--font-sans); }
 .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
@@ -133,6 +140,12 @@ header.masthead { padding: var(--sp-5) 0; border-bottom: 1px solid var(--border)
   color: var(--muted-2); text-decoration: none; display: inline-flex; align-items: center; gap: 6px;
 }
 .masthead-link:hover { color: var(--accent); }
+.masthead-link .full { display: inline; }
+.masthead-link .short { display: none; }
+@media (max-width: 480px) {
+  .masthead-link .full { display: none; }
+  .masthead-link .short { display: inline; }
+}
 
 /* ══ Buttons — interface chrome, so sans, not serif ═══════════════════ */
 
@@ -246,8 +259,31 @@ header.masthead { padding: var(--sp-5) 0; border-bottom: 1px solid var(--border)
 .pipeline-table td:first-child { font-family: var(--font-sans); color: var(--muted); white-space: nowrap; }
 .pipeline-table td:last-child { font-family: var(--font-sans); font-size: 13px; color: var(--muted); white-space: nowrap; text-align: right; }
 .pipeline-table code { font-size: .82em; }
+/* Below 640px a 3-column table with sentence-length cells forces sideways
+   scrolling just to read a description — worse than useless on a phone.
+   Each row becomes a small stacked card instead: no data lost, nothing
+   to scroll horizontally for. */
 @media (max-width: 640px) {
-  .pipeline-table { display: block; overflow-x: auto; }
+  .pipeline-table, .pipeline-table tbody, .pipeline-table tr, .pipeline-table td {
+    display: block; width: 100%;
+  }
+  /* The header row is a bare <tr><th>...</th></tr> — no <thead> wrapper in
+     the markup, so a `thead` selector here would silently match nothing.
+     It's the table's first row either way. */
+  .pipeline-table tr:first-child { display: none; }
+  .pipeline-table tr {
+    padding: var(--sp-3) 0; border-top: 1px solid var(--border); border-bottom: none;
+  }
+  .pipeline-table tr:last-child { border-bottom: 1px solid var(--border-strong); }
+  .pipeline-table td {
+    padding: 3px 0; border-bottom: none; white-space: normal !important; text-align: left !important;
+  }
+  .pipeline-table td:first-child { font-weight: 600; color: var(--fg); font-size: 15px; }
+  .pipeline-table td:last-child { font-size: 13px; }
+  .pipeline-table td:last-child::before { content: "cost: "; }
+  .pipeline-table tr.is-gate { background: color-mix(in srgb, var(--accent) 6%, transparent);
+                               padding-left: var(--sp-3); padding-right: var(--sp-3); }
+  .pipeline-table tr.is-gate td { background: transparent; }
 }
 
 /* ══ Figure ═════════════════════════════════════════════════════════ */
@@ -304,6 +340,6 @@ footer .wrap {
   gap: var(--sp-4); flex-wrap: wrap; font-family: var(--font-sans); font-size: 13px;
 }
 footer .colophon { color: var(--muted); }
-footer .foot-links { display: flex; gap: var(--sp-5); }
+footer .foot-links { display: flex; gap: var(--sp-4) var(--sp-5); flex-wrap: wrap; }
 footer a.muted-link { color: var(--muted); text-decoration: none; }
 footer a.muted-link:hover { color: var(--accent); }
