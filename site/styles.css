@@ -236,6 +236,16 @@ header.site-nav {
 .problem-card p { font-size: 15.5px; color: var(--muted-2); line-height: 1.6; }
 .problem-card strong { color: var(--fg); }
 
+/* ══ Roadmap ════════════════════════════════════════════════════════
+   Same card shape as .problem-card, deliberately re-used rather than a
+   new visual language — but every card carries an explicit "not shipped
+   yet" badge so this section can never be mistaken for a feature list. */
+.badge-soon {
+  display: inline-flex; align-items: center; font-size: 12px; font-weight: 600;
+  color: var(--muted-2); background: var(--raised); border: 1px solid var(--border);
+  padding: 4px 10px; border-radius: 999px;
+}
+
 /* ══ Pipeline ═══════════════════════════════════════════════════════ */
 
 .pipeline {

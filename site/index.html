@@ -234,6 +234,40 @@ model = resolve(<span class="st">"support_bot_reply"</span>, fallback=<span clas
   </div>
 </section>
 
+<section class="roadmap">
+  <div class="wrap">
+    <div class="section-head center">
+      <span class="section-kicker">What's next</span>
+      <h2>Benchmarking full agents, not just single calls</h2>
+      <p>Everything above benchmarks one call: one prompt in, one judged
+        answer out. An agent is a loop &mdash; it can call a tool, read the
+        result, call the model again, and keep going before it produces a
+        final answer. That needs a different kind of run, not a config flag.</p>
+    </div>
+    <div class="problem-grid">
+      <div class="problem-card">
+        <span class="badge-soon">planned, not shipped yet</span>
+        <p style="margin-top:12px;"><strong>The sandbox runs the whole loop.</strong>
+          One test case means the agent's full sequence of tool calls, not
+          one request &mdash; then the judge scores the final answer.</p>
+      </div>
+      <div class="problem-card">
+        <span class="badge-soon">planned, not shipped yet</span>
+        <p style="margin-top:12px;"><strong>Checks on the trace, not just the reply.</strong>
+          Did it call the right tool? Stop within a reasonable number of
+          steps? That's a different kind of assertion than checking one
+          JSON response.</p>
+      </div>
+      <div class="problem-card">
+        <span class="badge-soon">mostly already there</span>
+        <p style="margin-top:12px;"><strong>Cost and latency already generalize.</strong>
+          They're summed per call today &mdash; an agent run just means
+          summing across every call the loop makes instead of one.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
 <section class="quickstart">
   <div class="wrap">
     <div class="qs-grid">
