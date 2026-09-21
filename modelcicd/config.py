@@ -1,7 +1,7 @@
 """One use case, fully specified — the thing everything else in this project reads.
 
 A "use case" is one place in someone's application where an LLM is called: a
-support bot's reply generator, a summarizer, a codegen assistant. Modus
+support bot's reply generator, a summarizer, a codegen assistant. MoCICD
 benchmarks candidates AGAINST that specific job, using THAT job's own test cases
 and THAT job's own quality bar — never a generic leaderboard, because a model
 that tops MMLU can still write unusable output for a task nobody else has.

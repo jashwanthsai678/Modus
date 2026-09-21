@@ -1,6 +1,6 @@
 # Design notes
 
-Why Modus works the way it does. This is the reasoning behind the
+Why MoCICD works the way it does. This is the reasoning behind the
 decisions — read it before extending the project, or if you want to
 understand why something that looks like an obvious improvement was
 deliberately not done.
@@ -84,7 +84,7 @@ Because a model choice, left alone, decays:
   same kind of sign-off a dependency upgrade would get — not happen silently
   because a scheduled job found a slightly higher number.
 
-Modus is built around those four constraints. It's a flat-file,
+MoCICD is built around those four constraints. It's a flat-file,
 self-hosted, single-tenant tool — no server, no database, no signup — meant
 to be dropped into an existing repository.
 

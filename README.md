@@ -1,4 +1,5 @@
-<h1 align="center">Modus</h1>
+<p align="center"><img src="docs/logo.png" alt="" width="120"></p>
+<h1 align="center">MoCICD</h1>
 
 <p align="center">
   <strong>Continuous model discovery, sandboxed benchmarking, and human-approved
@@ -7,7 +8,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg"></a>
-  <a href=".github/workflows/tests.yml"><img alt="Tests" src="https://github.com/jashwanthsai678/Modus/actions/workflows/tests.yml/badge.svg"></a>
+  <a href=".github/workflows/tests.yml"><img alt="Tests" src="https://github.com/jashwanthsai678/mocicd/actions/workflows/tests.yml/badge.svg"></a>
   <img alt="Python 3.9+" src="https://img.shields.io/badge/python-3.9%2B-blue.svg">
   <img alt="Self-hosted" src="https://img.shields.io/badge/hosting-self--hosted-informational">
 </p>
@@ -29,7 +30,7 @@
 
 ## What it is
 
-Modus is a self-hosted tool that continuously discovers, benchmarks,
+MoCICD is a self-hosted tool that continuously discovers, benchmarks,
 and lets you approve which LLM your application actually uses — separately,
 for each specific feature that calls one. It doesn't look for "the best
 model" in general; it finds the best model **for one job**, tested against
@@ -49,7 +50,7 @@ to answer one question well: which model id should that line return?
 
 New models ship every few weeks. Nobody re-benchmarks forty candidates by hand,
 so teams either overpay for a model a cheaper one now matches, or quietly ship a
-regression nobody measured. Modus runs that comparison for you, on a
+regression nobody measured. MoCICD runs that comparison for you, on a
 schedule, and puts one decision in front of a human: **approve, or don't.**
 
 | | |

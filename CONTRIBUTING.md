@@ -1,4 +1,4 @@
-# Contributing to Modus
+# Contributing to MoCICD
 
 Thanks for looking at this. This doc covers how to get set up, how to run
 things, and the conventions this codebase actually follows in practice — so
@@ -7,8 +7,8 @@ you can match them instead of guessing from reading everything first.
 ## Getting set up
 
 ```
-git clone https://github.com/jashwanthsai678/Modus.git
-cd Modus
+git clone https://github.com/jashwanthsai678/mocicd.git
+cd mocicd
 python -m venv .venv
 .venv\Scripts\activate        (Windows)   /   source .venv/bin/activate   (macOS/Linux)
 pip install -e .

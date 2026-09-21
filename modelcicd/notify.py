@@ -43,7 +43,7 @@ def send_pending(use_case: str, state: dict, board_report: str,
 
     approved = state.get("approvedModel") or "(nothing approved yet)"
     approved_score = state.get("approvedScore")
-    subject = f"Modus: a better model for '{use_case}'"
+    subject = f"MoCICD: a better model for '{use_case}'"
     body = f"""A scheduled bench run found a candidate that beats what is
 currently approved for '{use_case}'.
 

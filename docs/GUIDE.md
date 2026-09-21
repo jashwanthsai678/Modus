@@ -1,6 +1,6 @@
 # Feature guide
 
-Reference for the parts of Modus you reach for after the
+Reference for the parts of MoCICD you reach for after the
 [Quickstart](../README.md#quickstart) — connecting a real application,
 scanning its code, comparing against a live endpoint, patching an approved
 model back into source, and running the whole loop on a schedule.
