@@ -371,6 +371,7 @@ under two different names was its own small source of confusion.
 | `catalogue` | free | Polls OpenRouter and saves `out/catalogue.json` |
 | `shortlist --use-case <path>` | free | Applies one use case's guardrails to the catalogue |
 | `run --use-case <path> [--project <slug>]` | **$** | Sandboxes + judges + ranks the shortlist (+ the live endpoint, if configured) |
+| `optimize --use-case <path> [--from-run <path>] [--cheap-model <id>] [--optimizer-model <id>] [--max-iterations N] [--target-gap G] [--project <slug>]` | **$** | Tries to close the score gap between a cheap candidate and a run's best one by auto-optimizing its prompt — evidence only, never changes `resolve()` |
 | `status [--use-case <path> \| --use-case-name <name>] [--project <slug>]` | free | Shows the approved model and any pending candidate |
 | `approve [--use-case <path> \| --use-case-name <name>] [--model <id>] [--project <slug>]` | free | Promotes a model — the only thing that changes `resolve()` |
 | `reject [--use-case <path> \| --use-case-name <name>] [--project <slug>]` | free | Dismisses the pending candidate — never changes `resolve()` |
@@ -607,6 +608,45 @@ stays true.
 
 ---
 
+## Prompt optimization — closing the gap between a cheap candidate and the best one
+
+Everything above answers "which *existing* model should this feature use."
+`modelcicd optimize` asks a different question about a use case that's
+already been benched: can the cheapest tier's best candidate be made to
+score like the run's overall winner — not by training anything, but by
+rewriting the prompt it's given?
+
+```bash
+python -m modelcicd.cli run --use-case use_cases/my_feature.yaml       # bench it first
+python -m modelcicd.cli optimize --use-case use_cases/my_feature.yaml  # then try to close the gap
+```
+
+The winning candidate's own answers, and the judge's own stated reasons
+for scoring them well, are the teaching material — a model turns that into
+a revised prompt for the cheap candidate, which is re-run and re-scored,
+blind, against the same rubric. If it falls short, its own attempt and
+where the judge marked it down feed the next rewrite: a bounded,
+self-refining loop (`--max-iterations`, default 3), not a single guess. It
+stops the moment the cheap candidate lands within `--target-gap` (default
+0.20, the same 1–5 scale every score here already uses) of the winner's
+score.
+
+**Evidence only — this never changes `resolve()` or any approved model.**
+It reads an already-saved bench run (the most recent one, or `--from-run`
+for a specific one) and writes its own record to `out/optimize/`, entirely
+separate from the leaderboard and the trend line. Turning an optimized
+prompt into what a use case actually asks for in production is a
+deliberate, later, human action — the same boundary this project already
+draws between `state.approve()` and `apply-code-patch`: edit the use
+case's `systemPrompt` yourself once you've read the result.
+
+Useful flags: `--cheap-model` to target a specific candidate instead of the
+cheapest tier's best, `--optimizer-model` to choose which model writes the
+revised prompt (default: the winning candidate itself), and `--from-run`
+to optimize against a specific saved run instead of the latest one.
+
+---
+
 ## Real cost and latency — not the catalogue's price ceiling
 
 The catalogue's `price_out` is a *ceiling* — what a use case is willing to
@@ -724,6 +764,8 @@ modelcicd/
   wizard.py          turns answers (CLI or dashboard form) into a valid use_case.yaml
   code_patch.py      the one place this project writes into a connected app's OWN source
   runner.py          the reusable core of one bench run, shared by `cli run` and the scheduler
+  optimizer.py       teacher -> student prompt optimization for an already-benched use case
+                     (opt-in, evidence only — never changes resolve() or any approved model)
   scheduler.py       re-runs whatever is due, on its own schedule
   cli.py             the `python -m modelcicd.cli ...` / `modelcicd ...` entrypoint
   dashboard.py       the local web view (`cli ui`) — same functionality as the CLI

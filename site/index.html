@@ -12,6 +12,9 @@
 <meta property="og:description" content="Continuously discovers models, benchmarks each one against your own feature's test cases, and asks a human before production changes.">
 <meta property="og:type" content="website">
 
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@600;700;800;900&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -48,9 +51,10 @@
         <li><span class="n mono">1</span><a href="#problem">The problem</a></li>
         <li><span class="n mono">2</span><a href="#how-it-works">How it works</a></li>
         <li><span class="n mono">3</span><a href="#proof">Not just a score</a></li>
-        <li><span class="n mono">4</span><a href="#why">Why it's built this way</a></li>
-        <li><span class="n mono">5</span><a href="#next">What's next</a></li>
-        <li><span class="n mono">6</span><a href="#quickstart">Quickstart</a></li>
+        <li><span class="n mono">4</span><a href="#optimize">Coach a cheap model</a></li>
+        <li><span class="n mono">5</span><a href="#why">Why it's built this way</a></li>
+        <li><span class="n mono">6</span><a href="#next">What's next</a></li>
+        <li><span class="n mono">7</span><a href="#quickstart">Quickstart</a></li>
       </ol>
     </div>
   </div>
@@ -165,9 +169,45 @@ model = resolve(<span class="st">"support_bot_reply"</span>, fallback=<span clas
   </div>
 </section>
 
-<section id="why">
+<section id="optimize">
   <div class="wrap">
     <span class="section-no mono">04</span>
+    <div class="section-head">
+      <h2>Coach a cheap model with the best one's own answers</h2>
+      <p>Once a bench has run, MoCICD can try to close the gap between the
+        cheapest tier's best candidate and the run's overall winner &mdash;
+        not by training anything, but by rewriting the prompt.</p>
+    </div>
+    <div class="prose-list">
+      <div class="prose-item">
+        <span class="n mono">01</span>
+        <p><strong>The winner's answers become the teaching material.</strong>
+          Its real outputs, and the judge's own stated reasons for scoring
+          them well, are handed to a model that rewrites the cheap
+          candidate's prompt around them.</p>
+      </div>
+      <div class="prose-item">
+        <span class="n mono">02</span>
+        <p><strong>The cheap model is re-run and re-scored, blind, against
+          the same rubric.</strong> If it falls short, its own attempt and
+          where the judge marked it down feed the next rewrite &mdash; a
+          bounded, self-refining loop, not a single guess.</p>
+      </div>
+      <div class="prose-item">
+        <span class="n mono">03</span>
+        <p><strong>It never touches production on its own.</strong>
+          <code>modelcicd optimize</code> saves its own record next to a
+          run's leaderboard. <code>resolve()</code> and every approved
+          model stay exactly as they were &mdash; using the result for real
+          still means deliberately editing the prompt yourself.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="why">
+  <div class="wrap">
+    <span class="section-no mono">05</span>
     <div class="section-head">
       <h2>Six decisions that aren't the obvious default</h2>
     </div>
@@ -201,7 +241,7 @@ model = resolve(<span class="st">"support_bot_reply"</span>, fallback=<span clas
 
 <section id="next">
   <div class="wrap">
-    <span class="section-no mono">05</span>
+    <span class="section-no mono">06</span>
     <div class="section-head">
       <h2>Benchmarking full agents, not just single calls</h2>
       <p>Everything above benchmarks one call: one prompt in, one judged answer
@@ -234,7 +274,7 @@ model = resolve(<span class="st">"support_bot_reply"</span>, fallback=<span clas
 
 <section id="quickstart">
   <div class="wrap">
-    <span class="section-no mono">06</span>
+    <span class="section-no mono">07</span>
     <div class="qs-grid">
       <div>
         <div class="section-head">
@@ -300,7 +340,7 @@ python -m modelcicd.cli ui</pre>
 
 <footer>
   <div class="wrap">
-    <span class="colophon">MoCICD &middot; Apache 2.0 &middot; set in Newsreader &amp; JetBrains Mono</span>
+    <span class="colophon">MoCICD &middot; Apache 2.0 &middot; set in Poppins, Inter &amp; JetBrains Mono</span>
     <div class="foot-links">
       <a class="muted-link" href="https://github.com/jashwanthsai678/mocicd" target="_blank" rel="noopener">GitHub</a>
       <a class="muted-link" href="https://github.com/jashwanthsai678/mocicd/blob/main/docs/GUIDE.md" target="_blank" rel="noopener">Feature guide</a>
