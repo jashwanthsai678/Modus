@@ -52,8 +52,8 @@ except ImportError:
 from modelcicd import (cache as cache_module, catalogue as catalogue_module,     # noqa: E402
                        config as config_module, guardrails as guardrails_module,
                        health as health_module, onboarding as onboarding_module,
-                       project as project_module, runner as runner_module,
-                       state as state_module)
+                       optimizer as optimizer_module, project as project_module,
+                       runner as runner_module, state as state_module)
 
 OUT = _ROOT / "out"
 CATALOGUE_PATH = OUT / "catalogue.json"
@@ -535,6 +535,98 @@ def cmd_run(args) -> int:
     return 0
 
 
+def _latest_run_file(out_dir: Path, use_case: str) -> Optional[Path]:
+    """The most recent SAVED BENCH run for one use case under one out/
+    directory — same filename convention `runner.execute` writes
+    (`<stamp>_<uc.name>.json`) and the same match-by-suffix approach the
+    dashboard already uses to find them, so `optimize` (with no
+    --from-run) picks up exactly what the dashboard shows as the latest run."""
+    if not out_dir.exists():
+        return None
+    suffix = f"_{use_case}.json"
+    files = [p for p in out_dir.glob("*.json") if p.name.endswith(suffix)]
+    return sorted(files, key=lambda p: p.name, reverse=True)[0] if files else None
+
+
+def cmd_optimize(args) -> int:
+    """Evidence only — see `optimizer.py`'s module docstring. This never
+    calls `state.py` or touches what `resolve()` returns; it reads an
+    already-saved bench run and writes its own artifact under
+    `out/optimize/`."""
+    uc = config_module.load(args.use_case)
+    out_dir = _out_dir(args)
+
+    run_path = Path(args.from_run) if args.from_run else _latest_run_file(out_dir, uc.name)
+    if not run_path or not run_path.exists():
+        print(f"no saved bench run for {uc.name!r} under {out_dir} — run "
+             f"`python -m modelcicd.cli run --use-case {args.use_case}` first, "
+             f"or pass --from-run.")
+        return 2
+    saved = json.loads(run_path.read_text(encoding="utf-8"))
+    bench_result, board = saved.get("bench"), saved.get("board")
+    if not bench_result or not board:
+        print(f"{run_path} doesn't look like a bench run file (missing bench/board).")
+        return 2
+
+    cat = _load_catalogue(args.refresh)
+    provider_by_model = catalogue_module.provider_map(cat)
+
+    try:
+        gold_model, gold_score, cheap_model = optimizer_module.select_gold_and_cheap(
+            board, cheap_model=args.cheap_model)
+    except optimizer_module.NothingToOptimize as exc:
+        print(str(exc))
+        return 2
+
+    print(f"\nfrom run     : {run_path.name}")
+    print(f"gold         : {gold_model}  (score {gold_score:.2f})")
+    print(f"cheap target : {cheap_model}")
+    print(f"cost         : up to {args.max_iterations} iteration(s) x "
+         f"(1 optimizer call + {len(uc.test_cases)} generation call(s) + "
+         f"{len(uc.test_cases)} judge call(s)) — stops early once within "
+         f"{args.target_gap} of the gold score")
+    print("               this is evidence only: resolve() and every "
+         "approved model stay exactly as they are.")
+
+    if not args.yes:
+        try:
+            reply = input("\nproceed? [y/N] ").strip().lower()
+        except EOFError:
+            reply = "n"
+        if reply not in ("y", "yes"):
+            print("nothing was spent.")
+            return 1
+
+    try:
+        result = asyncio.run(optimizer_module.execute(
+            uc, board, bench_result, cheap_model=cheap_model,
+            optimizer_model=args.optimizer_model, max_iterations=args.max_iterations,
+            target_gap=args.target_gap, provider_by_model=provider_by_model))
+    except Exception as exc:                        # noqa: BLE001
+        print(f"\nrefused or failed: {exc}")
+        return 3
+
+    print(f"\n{gold_model:<44} {gold_score:.2f}  (gold)")
+    for i, it in enumerate(result["iterations"], start=1):
+        score = f"{it['meanScore']:.2f}" if it["meanScore"] is not None else "  -  "
+        flag = "  <- best" if i == result.get("bestIteration") else ""
+        print(f"{cheap_model:<44} {score}  (iteration {i}){flag}")
+
+    if result["reachedTarget"]:
+        print(f"\nreached target: within {result['targetGap']} of the gold score.")
+    else:
+        gap = (gold_score - result["bestScore"]) if result.get("bestScore") is not None else None
+        print(f"\ndid not reach target after {len(result['iterations'])} "
+             f"iteration(s)" + (f" — best gap: {gap:.2f}" if gap is not None else ""))
+
+    path = optimizer_module.save(result, out_dir=out_dir)
+    print(f"\nsaved: {path}")
+    print("using this prompt for real still means editing the use case's "
+         "systemPrompt yourself, deliberately — nothing here does that "
+         "automatically.")
+    return 0
+
+
 def _use_case_name(args) -> Optional[str]:
     """The name state.py files under, resolved consistently everywhere.
 
@@ -903,6 +995,29 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--project", default=None,
                   help="scope state/out and candidate providers to this connected project")
 
+    op = uc_arg(sub.add_parser(
+        "optimize",
+        help="try to close the gap between a cheap candidate and a run's best "
+             "candidate by auto-optimizing its prompt — evidence only, never "
+             "changes resolve() or any approved model"))
+    op.add_argument("--from-run", default=None,
+                    help="path to a saved out/<stamp>_<name>.json bench run "
+                         "(default: the most recent one for this use case)")
+    op.add_argument("--cheap-model", default=None,
+                    help="which candidate to optimize (default: the best of the "
+                         "cheapest tier that ran, excluding the gold candidate)")
+    op.add_argument("--optimizer-model", default=None,
+                    help="which model writes the revised prompt (default: the gold "
+                         "model itself)")
+    op.add_argument("--max-iterations", type=int, default=3)
+    op.add_argument("--target-gap", type=float, default=0.20,
+                    help="stop once the cheap candidate's score is within this many "
+                         "points of the gold score (1-5 scale)")
+    op.add_argument("--yes", action="store_true", help="skip the cost confirmation")
+    op.add_argument("--project", default=None,
+                    help="scope out/ (where saved runs and this artifact live) to "
+                         "this connected project")
+
     ca = sub.add_parser("cache", help="inspect or clear the cached model responses")
     ca.add_argument("--clear-stale", action="store_true",
                     help=f"delete entries older than {cache_module.DEFAULT_TTL_DAYS} days")
@@ -957,8 +1072,8 @@ def main() -> int:
             "keys": cmd_keys, "set-dashboard-key": cmd_set_dashboard_key,
             "catalogue": cmd_catalogue,
             "wizard": cmd_wizard, "scan-repo": cmd_scan_repo, "shortlist": cmd_shortlist,
-            "run": cmd_run, "status": cmd_status, "approve": cmd_approve,
-            "reject": cmd_reject, "pending": cmd_pending,
+            "run": cmd_run, "optimize": cmd_optimize, "status": cmd_status,
+            "approve": cmd_approve, "reject": cmd_reject, "pending": cmd_pending,
             "apply-code-patch": cmd_apply_code_patch, "cache": cmd_cache,
             "ui": cmd_ui}[args.command](args)
 

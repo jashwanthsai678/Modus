@@ -14,8 +14,8 @@ sys.path.insert(0, str(ROOT))
 
 from modelcicd import (assertions, auth, bench, cache, catalogue, client,        # noqa: E402
                        code_patch, code_scan, config, endpoint_client, guardrails,
-                       health, judge, project, rank, runner, sandbox, scheduler,
-                       secrets, state, wizard)
+                       health, judge, optimizer, project, rank, runner, sandbox,
+                       scheduler, secrets, state, wizard)
 
 FAILURES: list = []
 
@@ -4073,6 +4073,162 @@ def test_bulk_create_refuses_duplicate_names_inside_one_batch() -> None:
         check("the duplicate is explained", "also named" in r.get_data(as_text=True))
     finally:
         project.DEFAULT_DIR = original
+
+
+# ── optimizer: the additive teacher -> student prompt feature ───────────────
+
+def test_optimizer_score_with_prompt_never_mutates_the_original_use_case() -> None:
+    import asyncio
+
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+    original_prompt = uc.system_prompt
+
+    async def fake_run_one(model_id, trial_uc, tc, *, provider="openrouter", cache=None):
+        check("sandbox is called with the REVISED prompt",
+              trial_uc.system_prompt == "REVISED", trial_uc.system_prompt)
+        check("the caller's real UseCase is untouched",
+              uc.system_prompt == original_prompt, uc.system_prompt)
+        return {"testCase": tc.id, "status": "ok", "seconds": 0.0,
+               "usage": None, "output": "answer"}
+
+    async def fake_score_one(model_id, judge_model, scored_uc, tc, output, *, cache=None):
+        check("the judge scores against the ORIGINAL use case, not the "
+             "prompt-swapped copy", scored_uc is uc)
+        return {"testCase": tc.id, "status": "ok", "scores": {}, "weighted": 4.0,
+               "reasons": {}, "wouldShip": True, "assertions": None}
+
+    original_run_one, original_score_one = (optimizer.sandbox_module.run_one,
+                                            optimizer.judge_module.score_one)
+    optimizer.sandbox_module.run_one = fake_run_one
+    optimizer.judge_module.score_one = fake_score_one
+    try:
+        result = asyncio.run(optimizer._score_with_prompt(
+            uc, uc.test_cases[0], "vendor/cheap", "REVISED",
+            provider="openrouter", judge_model=uc.judge_model))
+    finally:
+        optimizer.sandbox_module.run_one = original_run_one
+        optimizer.judge_module.score_one = original_score_one
+    check("scored ok", result.get("status") == "ok", f"{result}")
+    check("original system_prompt still unchanged after the call",
+         uc.system_prompt == original_prompt)
+
+
+def test_optimizer_select_gold_and_cheap_picks_the_cheapest_tiers_best() -> None:
+    board = {"tiers": {
+        "free": [{"model": "vendor/free-a", "score": 3.0},
+                {"model": "vendor/free-b", "score": 2.0}],
+        "paid-high": [{"model": "vendor/best", "score": 4.8}],
+    }}
+    gold, score, cheap = optimizer.select_gold_and_cheap(board)
+    check("gold is the highest overall score", gold == "vendor/best", gold)
+    check("gold score carried through", score == 4.8, score)
+    check("cheap is the best row of the cheapest tier", cheap == "vendor/free-a", cheap)
+
+
+def test_optimizer_select_gold_and_cheap_honors_an_explicit_cheap_model() -> None:
+    board = {"tiers": {"free": [{"model": "vendor/free-a", "score": 3.0}],
+                       "paid-high": [{"model": "vendor/best", "score": 4.8}]}}
+    _, _, cheap = optimizer.select_gold_and_cheap(board, cheap_model="vendor/named")
+    check("an explicit --cheap-model is honored as-is", cheap == "vendor/named", cheap)
+
+
+def test_optimizer_select_gold_and_cheap_raises_when_theres_nothing_to_optimize() -> None:
+    board = {"tiers": {"paid-high": [{"model": "vendor/only", "score": 4.8}]}}
+    try:
+        optimizer.select_gold_and_cheap(board)
+        check("raised NothingToOptimize", False)
+    except optimizer.NothingToOptimize:
+        check("raised NothingToOptimize", True)
+
+
+def _optimizer_fixture():
+    uc = config.load(ROOT / "examples" / "prep_material" / "use_case.yaml")
+    board = {"tiers": {"free": [{"model": "vendor/cheap", "score": 3.0}],
+                       "paid-high": [{"model": "vendor/gold", "score": 4.5}]}}
+    bench_result = {"judge": uc.judge_model,
+                    "results": [{"model": "vendor/gold", "testCases": [
+                        {"testCase": tc.id, "status": "ok", "output": "gold answer",
+                         "reasons": {}} for tc in uc.test_cases]}]}
+    return uc, board, bench_result
+
+
+def test_optimizer_execute_stops_once_the_target_gap_is_met() -> None:
+    import asyncio
+
+    uc, board, bench_result = _optimizer_fixture()
+    calls = {"propose": 0, "iterate": 0}
+    scores = [3.0, 4.4]                 # 4.4 is within 0.20 of the 4.5 gold score
+
+    async def fake_propose(*a, **k):
+        calls["propose"] += 1
+        return f"prompt v{calls['propose']}"
+
+    async def fake_iterate(uc_, cheap_model, prompt, *, provider, judge_model, cache=None):
+        calls["iterate"] += 1
+        return {"prompt": prompt, "meanScore": scores[calls["iterate"] - 1],
+                "perTestCase": [{"status": "ok", "output": "x", "reasons": {}}
+                               for _ in uc_.test_cases]}
+
+    original_propose, original_iterate = optimizer.propose_prompt, optimizer._run_iteration
+    optimizer.propose_prompt, optimizer._run_iteration = fake_propose, fake_iterate
+    try:
+        result = asyncio.run(optimizer.execute(
+            uc, board, bench_result, max_iterations=5, target_gap=0.20))
+    finally:
+        optimizer.propose_prompt, optimizer._run_iteration = original_propose, original_iterate
+
+    check("stopped after 2 iterations, well short of the 5-iteration cap",
+         len(result["iterations"]) == 2, len(result["iterations"]))
+    check("target reached", result["reachedTarget"] is True)
+    check("best iteration is the second one", result["bestIteration"] == 2,
+         result["bestIteration"])
+
+
+def test_optimizer_execute_never_exceeds_max_iterations() -> None:
+    import asyncio
+
+    uc, board, bench_result = _optimizer_fixture()
+
+    async def fake_propose(*a, **k):
+        return "same prompt every time"
+
+    async def fake_iterate(uc_, cheap_model, prompt, *, provider, judge_model, cache=None):
+        return {"prompt": prompt, "meanScore": 2.0,   # never gets near the gold score
+               "perTestCase": [{"status": "ok", "output": "x", "reasons": {}}
+                              for _ in uc_.test_cases]}
+
+    original_propose, original_iterate = optimizer.propose_prompt, optimizer._run_iteration
+    optimizer.propose_prompt, optimizer._run_iteration = fake_propose, fake_iterate
+    try:
+        result = asyncio.run(optimizer.execute(
+            uc, board, bench_result, max_iterations=3, target_gap=0.20))
+    finally:
+        optimizer.propose_prompt, optimizer._run_iteration = original_propose, original_iterate
+
+    check("never exceeds max_iterations", len(result["iterations"]) == 3,
+         len(result["iterations"]))
+    check("target not reached", result["reachedTarget"] is False)
+
+
+def test_optimizer_save_load_round_trips_and_never_collides_with_a_run_glob() -> None:
+    from modelcicd import dashboard
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp)
+        result = {"schema": 1, "stamp": "20260101T000000Z", "useCase": "demo",
+                 "goldModel": "vendor/gold", "cheapModel": "vendor/cheap", "iterations": []}
+        path = optimizer.save(result, out_dir=out_dir)
+        check("saved under a sibling optimize/ directory, not inside out/ itself",
+             path.parent.name == "optimize", str(path))
+        check("round-trips byte for byte", optimizer.load(path) == result)
+        check("load_latest finds it", optimizer.load_latest(out_dir, "demo") == result)
+
+        # THE EXACT GUARD `runner.py`/`dashboard.py`'s convention relies on:
+        # `dashboard._runs_for` globs `out/*_<use_case>.json` NON-recursively,
+        # so an optimize artifact living one directory down must never be
+        # mistaken for a regular bench run.
+        check("invisible to dashboard's own run-discovery glob",
+             dashboard._runs_for("demo", out_dir) == [])
 
 
 def main() -> int:
